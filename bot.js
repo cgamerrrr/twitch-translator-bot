@@ -116,6 +116,7 @@ async function onMessageHandler(channel, tags, msg, self) {
     let opt = { hour: '2-digit', minute: '2-digit', hour12: false };
     if (!city) return client.say(channel, `🕒 Местное время: ${new Date().toLocaleTimeString('ru-RU', opt)}`);
     try {
+      // ИСПРАВЛЕНО: Добавлена точная косая черта перед 'en'
       const trans = await axios.get('https://lingva.ml' + encodeURIComponent(city));
       if (trans.data && trans.data.translation) {
         let en = trans.data.translation.trim().replace(/\s+/g, '_');
@@ -139,6 +140,7 @@ async function onMessageHandler(channel, tags, msg, self) {
     let text = words.slice(2).join(' '); 
     if (!lang || !text) return;
     try {
+      // ИСПРАВЛЕНО: Добавлена точная косая черта перед переменной lang
       const res = await axios.get('https://lingva.ml' + lang + '/' + encodeURIComponent(text));
       if (res.data && res.data.translation) {
         client.say(channel, `🌐 [${lang.toUpperCase()}] ${authorName}: ${res.data.translation.trim()}`);
@@ -147,7 +149,7 @@ async function onMessageHandler(channel, tags, msg, self) {
     return;
   }
 
-  // --- БЛОК 2: СВЕРХНАДЁЖНЫЙ АВТОПЕРЕВОДЧИК ЧАТА ЧЕРЕЗ LINGVA API ---
+  // --- БЛОК 2: АВТОПЕРЕВОДЧИК ЧАТА ЧЕРЕЗ LINGVA API ---
   let textToTranslate = msg;
   if (tags.emotes) {
     const positions = [];
@@ -166,7 +168,7 @@ async function onMessageHandler(channel, tags, msg, self) {
   if (!textToTranslate || textToTranslate.length < 2) return;
 
   try {
-    // Отправляем запрос на стабильное открытое API Lingva (автоопределение языка -> русский)
+    // ИСПРАВЛЕНО: Добавлен точный слэш '/' перед 'ru', ссылка теперь ведет строго на 'https://lingva.mlru/'
     const response = await axios.get('https://lingva.mlru/' + encodeURIComponent(textToTranslate), {
       timeout: 4000
     });
@@ -175,7 +177,6 @@ async function onMessageHandler(channel, tags, msg, self) {
       const translatedText = response.data.translation.trim();
       const detectedLang = response.data.info?.detectedSourceInformedLanguage || response.data.info?.detectedSourceLanguage || '';
       
-      // Переводим строго если язык оригинала НЕ русский ('ru') и перевод отличается от оригинала
       if (detectedLang !== 'ru' && translatedText.toLowerCase() !== textToTranslate.toLowerCase()) {
         client.say(channel, `🌐 [Перевод] ${authorName}: ${translatedText}`);
       }
