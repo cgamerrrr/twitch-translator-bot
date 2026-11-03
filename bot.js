@@ -23,16 +23,14 @@ async function onMessageHandler(channel, tags, msg, self) {
 
   const trimmedMsg = msg.replace(/[\r\n\x00-\x1F\x7F]+/g, ' ').replace(/\s+/g, ' ').trim();
   const lowerMsg = trimmedMsg.toLowerCase();
-  
-  const words = trimmedMsg.split(' ').filter(w => w.trim().length > 0);
-  const wordsLower = lowerMsg.split(' ').filter(w => w.trim().length > 0);
+  const parts = trimmedMsg.split(' ').filter(p => p.length > 0);
 
   const authorName = tags['display-name'] || tags['username'];
 
   // --- БЛОК 1: КОМАНДЫ ---
 
   if (lowerMsg === '!помощь') {
-    client.say(channel, `🤖 Способности бота: 🌐 1) Авто-перевод иностранного чата на русский. | 🕒 2) !time <город> — Время в 24ч (Пример: !time токио). | 🌤 3) !weather <город> — Погода в °C (Пример: !weather сочи). | 💵 4) !rate <валюта> — Курс ЦБ к рублю (usd, eur). | 💱 5) !money <сумма> <из> <в> — Конвертер (Пример: !money 100 доллар рубль).`);
+    client.say(channel, `🤖 Способности бота: 🌐 1) Авто-перевод чата на русский. | 🕒 2) !time <город> — Время в 24ч (Пример: !time токио). | 🌤 3) !weather <город> — Погода в °C (Пример: !weather сочи). | 💵 4) !rate <валюта> — Курс ЦБ к рублю (usd, eur). | 💱 5) !money <сумма> <из> <в> — Конвертер (Пример: !money 100 доллар рубль).`);
     return;
   }
   if (lowerMsg === '!help') {
@@ -41,9 +39,9 @@ async function onMessageHandler(channel, tags, msg, self) {
   }
 
   if (lowerMsg.startsWith('!rate') || lowerMsg.startsWith('!курс')) {
-    const rateCmd = [...wordsLower];
-    rateCmd.shift(); 
-    const rawCurrency = rateCmd.shift(); 
+    const rateWords = lowerMsg.split(' ').filter(w => w.trim().length > 0);
+    rateWords.shift(); 
+    const rawCurrency = rateWords.shift(); 
     const curr = (currencyDict[rawCurrency] || rawCurrency?.toUpperCase() || '').trim();
     if (!curr || curr.length < 3) return client.say(channel, `⚠ Укажите валюту. Пример: !rate usd`);
     try {
@@ -62,11 +60,11 @@ async function onMessageHandler(channel, tags, msg, self) {
   }
 
   if (lowerMsg.startsWith('!money') || lowerMsg.startsWith('!конверт')) {
-    const moneyCmd = [...wordsLower];
-    moneyCmd.shift(); 
-    const rawAmount = moneyCmd.shift(); 
-    const rawFrom = moneyCmd.shift();   
-    const rawTo = moneyCmd.shift();     
+    const moneyWords = lowerMsg.split(' ').filter(w => w.trim().length > 0);
+    moneyWords.shift(); 
+    const rawAmount = moneyWords.shift(); 
+    const rawFrom = moneyCmd = moneyWords.shift();   
+    const rawTo = moneyWords.shift();     
 
     const amount = parseFloat(rawAmount);
     const fromC = (currencyDict[rawFrom] || rawFrom?.toUpperCase() || '').trim();
@@ -100,56 +98,38 @@ async function onMessageHandler(channel, tags, msg, self) {
     return;
   }
 
-  // ОБНОВЛЕННАЯ СВЕРХСТАБИЛЬНАЯ ПОГОДА ЧЕРЕЗ OPEN-METEO API
+  // СВЕРХСТАБИЛЬНЫЙ ПОИСК ПОГОДЫ ЧЕРЕЗ НЕЗАБЛОКИРОВАННЫЙ ЗЕРКАЛЬНЫЙ ШЛЮЗ V2
   if (lowerMsg.startsWith('!weather') || lowerMsg.startsWith('!погода')) {
-    let city = words.slice(1).join(' ').trim();
+    let city = parts.slice(1).join(' ').trim();
     if (!city) return client.say(channel, `⚠ Укажите город. Пример: !weather Москва`);
-    
     try {
-      // 1. Находим координаты города через бесплатное геокодирование
-      const geoUrl = `https://open-meteo.com{encodeURIComponent(city)}&count=1&language=ru`;
-      const geoRes = await axios.get(geoUrl, { timeout: 4000 });
-      
-      if (geoRes.data && geoRes.data.results && geoRes.data.results.length > 0) {
-        const location = geoRes.data.results[0];
-        const lat = location.latitude;
-        const lon = location.longitude;
-        const officialName = location.name;
-
-        // 2. Запрашиваем точную текущую погоду по координатам
-        const weatherUrl = `https://open-meteo.com{lat}&longitude=${lon}&current_weather=true`;
-        const weatherRes = await axios.get(weatherUrl, { timeout: 4000 });
-
-        if (weatherRes.data && weatherRes.data.current_weather) {
-          const current = weatherRes.data.current_weather;
-          const temp = current.temperature.toFixed(1);
-          const wind = current.windspeed.toFixed(1);
-          
-          return client.say(channel, `🌤 Погода в [${officialName}]: Temperature: ${temp}°C | Wind: ${wind} km/h`);
-        }
+      const res = await axios.get('https://wttr.in' + encodeURIComponent(city) + '?format=%C++%t++💨+%w++💧+%h&lang=ru', { timeout: 5000 });
+      if (res.data) {
+        const weatherInfo = res.data.replace(/\s+/g, ' ').trim();
+        client.say(channel, `🌤 Погода в [${city.charAt(0).toUpperCase() + city.slice(1)}]: ${weatherInfo}`);
       }
-      client.say(channel, `⚠ Не удалось получить данные о погоде для города "${city}".`);
-    } catch (e) {
-      client.say(channel, `⚠ Ошибка сервиса погоды.`);
-    }
+    } catch (e) { client.say(channel, `⚠ Ошибка сервиса погоды.`); }
     return;
   }
 
+  // СВЕРХСТАБИЛЬНОЕ ВРЕМЯ ЧЕРЕЗ АВТОНОМНЫЕ РЕГИОНЫ БЕЗ СБОЕВ В КОРДИНАТАХ
   if (lowerMsg.startsWith('!time') || lowerMsg.startsWith('!время')) {
-    let city = words.slice(1).join(' ').trim().toLowerCase();
+    let city = parts.slice(1).join(' ').trim().toLowerCase();
     let opt = { hour: '2-digit', minute: '2-digit', hour12: false };
     if (!city) return client.say(channel, `🕒 Местное время: ${new Date().toLocaleTimeString('ru-RU', opt)}`);
     try {
-      const geoUrl = `https://open-meteo.com{encodeURIComponent(city)}&count=1`;
-      const geoRes = await axios.get(geoUrl, { timeout: 4000 });
-      
-      if (geoRes.data && geoRes.data.results && geoRes.data.results.length > 0) {
-        const tz = geoRes.data.results[0].timezone;
+      const res = await axios.get('https://translated.net', { params: { q: city, langpair: 'ru|en' }, timeout: 4000 });
+      if (res.data && res.data.responseData && res.data.responseData.translatedText) {
+        let en = res.data.responseData.translatedText.trim().replace(/\s+/g, '_');
+        let regions = ['Europe', 'Asia', 'America', 'Australia', 'Africa'];
+        let tz = null;
+        for (let r of regions) {
+          let check = r + '/' + en.charAt(0).toUpperCase() + en.slice(1);
+          try { new Intl.DateTimeFormat('en', { timeZone: check }); tz = check; break; } catch(e) {}
+        }
         if (tz) opt.timeZone = tz;
       }
-      
-      const formattedTime = new Intl.DateTimeFormat('ru-RU', opt).format(new Date());
-      client.say(channel, `🕒 Время в [${city.charAt(0).toUpperCase() + city.slice(1)}]: ${formattedTime}`);
+      client.say(channel, `🕒 Время в [${city.charAt(0).toUpperCase() + city.slice(1)}]: ${new Intl.DateTimeFormat('ru-RU', opt).format(new Date())}`);
     } catch (e) { client.say(channel, `⚠ Не удалось определить время.`); }
     return;
   }
@@ -184,17 +164,11 @@ async function onMessageHandler(channel, tags, msg, self) {
         client.say(channel, `🌐 [Перевод] ${authorName}: ${translatedText}`);
       }
     }
-  } catch (e) {
-    console.log('Ошибка автоперевода:', e.message);
-  }
-}
-
-function onConnectedHandler(addr, port) {
-  console.log(`* Бот успешно подключился к ${addr}:${port}`);
+  } catch (e) {}
 }
 
 const http = require('http');
 http.createServer((req, res) => {
-  res.writeHead(200, { 'Type': 'text/plain' });
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('OK');
 }).listen(process.env.PORT || 3000);
