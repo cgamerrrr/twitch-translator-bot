@@ -1,7 +1,7 @@
 {
   "name": "twitch-translator-bot",
-  "version": "2.0.0",
-  "description": "Twitch bot with fishing, profiles, coins and statistics",
+  "version": "3.0.0",
+  "description": "Twitch chat bot",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "axios": "^1.7.9",
-    "better-sqlite3": "^11.7.0",
     "tmi.js": "^1.8.5"
   }
 }
