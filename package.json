@@ -1,7 +1,7 @@
 {
   "name": "twitch-translator",
   "version": "1.0.0",
-  "description": "Twitch bot with weather, currency, time and translation commands",
+  "description": "Twitch bot with weather, currency, time, translation and fishing",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
