@@ -17,7 +17,7 @@ const client = new tmi.client(opts);
 client.on('message', onMessageHandler);
 client.on('connected', (addr, port) => console.log(`* Бот успешно подключился к ${addr}:${port}`));
 client.on('error', () => console.log('Ошибка сети Twitch, восстановление...'));
-client.connect().catch(() => console.log('Ошибка подключения чата. Проверьте переменные окружения.'));
+client.connect().catch(() => console.log('Ошибка подключения чата.'));
 
 async function onMessageHandler(channel, tags, msg, self) {
   if (self) return; 
@@ -116,15 +116,17 @@ async function onMessageHandler(channel, tags, msg, self) {
     let opt = { hour: '2-digit', minute: '2-digit', hour12: false };
     if (!city) return client.say(channel, `🕒 Местное время: ${new Date().toLocaleTimeString('ru-RU', opt)}`);
     try {
-      const trans = await translate(city, { to: 'en' });
-      let en = trans.text.trim().replace(/\s+/g, '_');
-      let regions = ['Europe', 'Asia', 'America', 'Australia', 'Africa'];
-      let tz = null;
-      for (let r of regions) {
-        let check = r + '/' + en.charAt(0).toUpperCase() + en.slice(1);
-        try { new Intl.DateTimeFormat('en', { timeZone: check }); tz = check; break; } catch(e) {}
+      const trans = await axios.get('https://googleapis.com' + encodeURIComponent(city));
+      if (trans.data && trans.data[0] && trans.data[0][0]) {
+        let en = trans.data[0][0][0].trim().replace(/\s+/g, '_');
+        let regions = ['Europe', 'Asia', 'America', 'Australia', 'Africa'];
+        let tz = null;
+        for (let r of regions) {
+          let check = r + '/' + en.charAt(0).toUpperCase() + en.slice(1);
+          try { new Intl.DateTimeFormat('en', { timeZone: check }); tz = check; break; } catch(e) {}
+        }
+        if (tz) opt.timeZone = tz;
       }
-      if (tz) opt.timeZone = tz;
       client.say(channel, `🕒 Время в [${city.charAt(0).toUpperCase() + city.slice(1)}]: ${new Intl.DateTimeFormat('ru-RU', opt).format(new Date())}`);
     } catch (e) { client.say(channel, `⚠ Не удалось определить время.`); }
     return;
@@ -137,13 +139,15 @@ async function onMessageHandler(channel, tags, msg, self) {
     let text = words.slice(2).join(' '); 
     if (!lang || !text) return;
     try {
-      const res = await translate(text, { to: lang });
-      if (res?.text) client.say(channel, `🌐 [${lang.toUpperCase()}] ${authorName}: ${res.text.trim()}`);
+      const res = await axios.get('https://googleapis.com' + lang + '&dt=t&q=' + encodeURIComponent(text));
+      if (res.data && res.data[0] && res.data[0][0]) {
+        client.say(channel, `🌐 [${lang.toUpperCase()}] ${authorName}: ${res.data[0][0][0].trim()}`);
+      }
     } catch (e) {}
     return;
   }
 
-  // --- БЛОК 2: НАДЁЖНЫЙ АВТОПЕРЕВОДЧИК ЧАТА ЧЕРЕЗ MYMEMORY API ---
+  // --- БЛОК 2: АВТОПЕРЕВОДЧИК ЧАТА НА РУССКИЙ ---
   let textToTranslate = msg;
   if (tags.emotes) {
     const positions = [];
@@ -162,26 +166,23 @@ async function onMessageHandler(channel, tags, msg, self) {
   if (!textToTranslate || textToTranslate.length < 2) return;
 
   try {
-    // Делаем независимый и стабильный запрос к API MyMemory для автоопределения и перевода на русский
-    const response = await axios.get('https://translated.net', {
-      params: {
-        q: textToTranslate,
-        langpair: 'autodetect|ru'
-      },
+    // Используем клиентский RPC-шлюз Google, который возвращает массив с переводом и исходным языком
+    const response = await axios.get('https://googleapis.com', {
+      params: { client: 'gtx', sl: 'auto', tl: 'ru', dt: 't', q: textToTranslate },
       timeout: 4000
     });
     
-    if (response.data && response.data.responseData && response.data.responseData.translatedText) {
-      const translatedText = response.data.responseData.translatedText.trim();
-      const detectedLang = response.data.responseDetails || '';
+    if (response.data && response.data[0] && response.data[0][0]) {
+      const translatedText = response.data[0][0][0].trim();
+      const detectedLang = response.data[2]; // Точный код определенного языка (например: 'en', 'es', 'ru')
       
-      // Игнорируем перевод, если MyMemory определил исходный язык как русский
-      if (!detectedLang.toLowerCase().includes('from ru') && translatedText.toLowerCase() !== textToTranslate.toLowerCase()) {
+      // Переводим строго если язык оригинала НЕ русский ('ru') и текст реально изменился
+      if (detectedLang !== 'ru' && translatedText.toLowerCase() !== textToTranslate.toLowerCase()) {
         client.say(channel, `🌐 [Перевод] ${authorName}: ${translatedText}`);
       }
     }
   } catch (e) {
-    console.log('Автоперевод пропущен:', e.message);
+    console.log('Ошибка автоперевода:', e.message);
   }
 }
 
