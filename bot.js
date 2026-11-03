@@ -1,6 +1,5 @@
 const tmi = require('tmi.js');
 const axios = require('axios');
-const translate = require('@iamtraction/google-translate');
 
 const opts = {
   identity: { username: 'cgamer_bot', password: process.env.TWITCH_OAUTH },
@@ -33,11 +32,11 @@ async function onMessageHandler(channel, tags, msg, self) {
   // --- БЛОК 1: КОМАНДЫ ---
 
   if (lowerMsg === '!помощь') {
-    client.say(channel, `🤖 Способности бота: 🌐 1) Авто-перевод иностранного чата на русский. | 🕒 2) !time <город> — Время в 24ч (Пример: !time токио). | 🌤 3) !weather <город> — Погода в °C (Пример: !weather сочи). | 💵 4) !rate <валюта> — Курс ЦБ к рублю (usd, eur). | 💱 5) !money <сумма> <из> <в> — Конвертер (Пример: !money 100 доллар рубль). | 🗺 6) !tr <код> <текст> — Перевод (Коды: en, es, de, fr, ja).`);
+    client.say(channel, `🤖 Способности бота: 🌐 1) Авто-перевод иностранного чата на русский. | 🕒 2) !time <город> — Время в 24ч (Пример: !time токио). | 🌤 3) !weather <город> — Погода в °C (Пример: !weather сочи). | 💵 4) !rate <валюта> — Курс ЦБ к рублю (usd, eur). | 💱 5) !money <сумма> <из> <в> — Конвертер (Пример: !money 100 доллар рубль).`);
     return;
   }
   if (lowerMsg === '!help') {
-    client.say(channel, `🤖 Bot abilities: 🌐 1) Auto-translation to RU. | 🕒 2) !time <city> — Current time in 24h. | 🌤 3) !weather <city> — Weather in °C. | 💵 4) !rate <currency> — Rate to RUB. | 💱 5) !money <amount> <from> <to> — Currency converter. | 🗺 6) !tr <lang_code> <text> — Manual translation.`);
+    client.say(channel, `🤖 Bot abilities: 🌐 1) Auto-translation to RU. | 🕒 2) !time <city> — Current time in 24h. | 🌤 3) !weather <city> — Weather in °C. | 💵 4) !rate <currency> — Rate to RUB. | 💱 5) !money <amount> <from> <to> — Currency converter.`);
     return;
   }
 
@@ -101,13 +100,38 @@ async function onMessageHandler(channel, tags, msg, self) {
     return;
   }
 
+  // ОБНОВЛЕННАЯ СВЕРХСТАБИЛЬНАЯ ПОГОДА ЧЕРЕЗ OPEN-METEO API
   if (lowerMsg.startsWith('!weather') || lowerMsg.startsWith('!погода')) {
     let city = words.slice(1).join(' ').trim();
     if (!city) return client.say(channel, `⚠ Укажите город. Пример: !weather Москва`);
+    
     try {
-      const res = await axios.get('https://wttr.in' + encodeURIComponent(city), { params: { format: '%C  %t  💨 %w  💧 %h', lang: 'ru' }, timeout: 5000 });
-      if (res.data) client.say(channel, `🌤 Погода в [${city.charAt(0).toUpperCase() + city.slice(1)}]: ${res.data.replace(/\s+/g, ' ').trim()}`);
-    } catch (e) { client.say(channel, `⚠ Ошибка сервиса погоды.`); }
+      // 1. Находим координаты города через бесплатное геокодирование
+      const geoUrl = `https://open-meteo.com{encodeURIComponent(city)}&count=1&language=ru`;
+      const geoRes = await axios.get(geoUrl, { timeout: 4000 });
+      
+      if (geoRes.data && geoRes.data.results && geoRes.data.results.length > 0) {
+        const location = geoRes.data.results[0];
+        const lat = location.latitude;
+        const lon = location.longitude;
+        const officialName = location.name;
+
+        // 2. Запрашиваем точную текущую погоду по координатам
+        const weatherUrl = `https://open-meteo.com{lat}&longitude=${lon}&current_weather=true`;
+        const weatherRes = await axios.get(weatherUrl, { timeout: 4000 });
+
+        if (weatherRes.data && weatherRes.data.current_weather) {
+          const current = weatherRes.data.current_weather;
+          const temp = current.temperature.toFixed(1);
+          const wind = current.windspeed.toFixed(1);
+          
+          return client.say(channel, `🌤 Погода в [${officialName}]: Temperature: ${temp}°C | Wind: ${wind} km/h`);
+        }
+      }
+      client.say(channel, `⚠ Не удалось получить данные о погоде для города "${city}".`);
+    } catch (e) {
+      client.say(channel, `⚠ Ошибка сервиса погоды.`);
+    }
     return;
   }
 
@@ -116,38 +140,21 @@ async function onMessageHandler(channel, tags, msg, self) {
     let opt = { hour: '2-digit', minute: '2-digit', hour12: false };
     if (!city) return client.say(channel, `🕒 Местное время: ${new Date().toLocaleTimeString('ru-RU', opt)}`);
     try {
-      const res = await axios.get('https://translated.net', { params: { q: city, langpair: 'ru|en' }, timeout: 4000 });
-      if (res.data && res.data.responseData && res.data.responseData.translatedText) {
-        let en = res.data.responseData.translatedText.trim().replace(/\s+/g, '_');
-        let regions = ['Europe', 'Asia', 'America', 'Australia', 'Africa'];
-        let tz = null;
-        for (let r of regions) {
-          let check = r + '/' + en.charAt(0).toUpperCase() + en.slice(1);
-          try { new Intl.DateTimeFormat('en', { timeZone: check }); tz = check; break; } catch(e) {}
-        }
+      const geoUrl = `https://open-meteo.com{encodeURIComponent(city)}&count=1`;
+      const geoRes = await axios.get(geoUrl, { timeout: 4000 });
+      
+      if (geoRes.data && geoRes.data.results && geoRes.data.results.length > 0) {
+        const tz = geoRes.data.results[0].timezone;
         if (tz) opt.timeZone = tz;
       }
-      client.say(channel, `🕒 Время в [${city.charAt(0).toUpperCase() + city.slice(1)}]: ${new Intl.DateTimeFormat('ru-RU', opt).format(new Date())}`);
+      
+      const formattedTime = new Intl.DateTimeFormat('ru-RU', opt).format(new Date());
+      client.say(channel, `🕒 Время в [${city.charAt(0).toUpperCase() + city.slice(1)}]: ${formattedTime}`);
     } catch (e) { client.say(channel, `⚠ Не удалось определить время.`); }
     return;
   }
 
-  if (trimmedMsg.startsWith('!tr ')) {
-    const trWords = [...wordsLower];
-    trWords.shift(); 
-    let lang = trWords.shift()?.toLowerCase(); 
-    let text = words.slice(2).join(' '); 
-    if (!lang || !text) return;
-    try {
-      const res = await axios.get('https://translated.net', { params: { q: text, langpair: 'ru|' + lang }, timeout: 4000 });
-      if (res.data && res.data.responseData && res.data.responseData.translatedText) {
-        client.say(channel, `🌐 [${lang.toUpperCase()}] ${authorName}: ${res.data.responseData.translatedText.trim()}`);
-      }
-    } catch (e) {}
-    return;
-  }
-
-  // --- БЛОК 2: НАДЁЖНЫЙ АВТОПЕРЕВОДЧИК ЧАТА НА РУССКИЙ ---
+  // --- БЛОК 2: АВТОПЕРЕВОДЧИК ЧАТА НА РУССКИЙ ---
   let textToTranslate = msg;
   if (tags.emotes) {
     const positions = [];
@@ -166,7 +173,6 @@ async function onMessageHandler(channel, tags, msg, self) {
   if (!textToTranslate || textToTranslate.length < 2) return;
 
   try {
-    // Чистый, устойчивый запрос к MyMemory API без лимитов и опечаток в слэшах
     const response = await axios.get('https://translated.net', {
       params: { q: textToTranslate, langpair: 'en|ru' },
       timeout: 4000
@@ -174,8 +180,6 @@ async function onMessageHandler(channel, tags, msg, self) {
     
     if (response.data && response.data.responseData && response.data.responseData.translatedText) {
       const translatedText = response.data.responseData.translatedText.trim();
-      
-      // Выводим перевод, только если текст реально изменился после перевода
       if (translatedText.toLowerCase() !== textToTranslate.toLowerCase()) {
         client.say(channel, `🌐 [Перевод] ${authorName}: ${translatedText}`);
       }
@@ -191,8 +195,6 @@ function onConnectedHandler(addr, port) {
 
 const http = require('http');
 http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('CGamer Bot is running 24/7\n');
-}).listen(process.env.PORT || 3000, () => {
-  console.log('Служебный веб-сервер запущен');
-});
+  res.writeHead(200, { 'Type': 'text/plain' });
+  res.end('OK');
+}).listen(process.env.PORT || 3000);
