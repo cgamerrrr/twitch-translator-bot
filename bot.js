@@ -23,7 +23,9 @@ async function onMessageHandler(channel, tags, msg, self) {
 
   const trimmedMsg = msg.replace(/[\r\n\x00-\x1F\x7F]+/g, ' ').replace(/\s+/g, ' ').trim();
   const lowerMsg = trimmedMsg.toLowerCase();
-  const parts = trimmedMsg.split(' ').filter(p => p.length > 0);
+  
+  const words = trimmedMsg.split(' ').filter(w => w.trim().length > 0);
+  const wordsLower = lowerMsg.split(' ').filter(w => w.trim().length > 0);
 
   const authorName = tags['display-name'] || tags['username'];
 
@@ -39,9 +41,9 @@ async function onMessageHandler(channel, tags, msg, self) {
   }
 
   if (lowerMsg.startsWith('!rate') || lowerMsg.startsWith('!курс')) {
-    const rateWords = lowerMsg.split(' ').filter(w => w.trim().length > 0);
-    rateWords.shift(); 
-    const rawCurrency = rateWords.shift(); 
+    const rateCmd = [...wordsLower];
+    rateCmd.shift(); 
+    const rawCurrency = rateCmd.shift(); 
     const curr = (currencyDict[rawCurrency] || rawCurrency?.toUpperCase() || '').trim();
     if (!curr || curr.length < 3) return client.say(channel, `⚠ Укажите валюту. Пример: !rate usd`);
     try {
@@ -60,11 +62,11 @@ async function onMessageHandler(channel, tags, msg, self) {
   }
 
   if (lowerMsg.startsWith('!money') || lowerMsg.startsWith('!конверт')) {
-    const moneyWords = lowerMsg.split(' ').filter(w => w.trim().length > 0);
-    moneyWords.shift(); 
-    const rawAmount = moneyWords.shift(); 
-    const rawFrom = moneyWords.shift();   
-    const rawTo = moneyWords.shift();     
+    const moneyCmd = [...wordsLower];
+    moneyCmd.shift(); 
+    const rawAmount = moneyCmd.shift(); 
+    const rawFrom = moneyCmd.shift();   
+    const rawTo = moneyCmd.shift();     
 
     const amount = parseFloat(rawAmount);
     const fromC = (currencyDict[rawFrom] || rawFrom?.toUpperCase() || '').trim();
@@ -99,7 +101,10 @@ async function onMessageHandler(channel, tags, msg, self) {
   }
 
   if (lowerMsg.startsWith('!weather') || lowerMsg.startsWith('!погода')) {
-    let city = parts.slice(1).join(' ').trim();
+    const weatherCmd = [...words];
+    weatherCmd.shift(); 
+    let city = weatherCmd.join(' ').trim(); // ИСПРАВЛЕНО: Город считывается из правильного массива слов
+
     if (!city) return client.say(channel, `⚠ Укажите город. Пример: !weather Москва`);
     try {
       const res = await axios.get('https://wttr.in' + encodeURIComponent(city) + '?format=%C++%t++💨+%w++💧+%h&lang=ru', { timeout: 5000 });
@@ -112,7 +117,10 @@ async function onMessageHandler(channel, tags, msg, self) {
   }
 
   if (lowerMsg.startsWith('!time') || lowerMsg.startsWith('!время')) {
-    let city = parts.slice(1).join(' ').trim().toLowerCase();
+    const timeCmd = [...words];
+    timeCmd.shift();
+    let city = timeCmd.join(' ').trim().toLowerCase(); // ИСПРАВЛЕНО: Город считывается из правильного массива
+
     let opt = { hour: '2-digit', minute: '2-digit', hour12: false };
     if (!city) return client.say(channel, `🕒 Местное время: ${new Date().toLocaleTimeString('ru-RU', opt)}`);
     try {
@@ -169,7 +177,6 @@ function onConnectedHandler(addr, port) {
   console.log(`* Бот успешно подключился к ${addr}:${port}`);
 }
 
-// ИСПРАВЛЕНО: Сервер теперь слушает строго системный порт Render (0.0.0.0 на PORT)
 const http = require('http');
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
