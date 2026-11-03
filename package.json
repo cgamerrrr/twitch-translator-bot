@@ -1,7 +1,7 @@
 {
   "name": "twitch-translator-bot",
   "version": "2.0.0",
-  "description": "Twitch chat bot",
+  "description": "Twitch bot with fishing, profiles, coins and statistics",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
