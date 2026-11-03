@@ -166,3 +166,11 @@ async function onMessageHandler(channel, tags, msg, self) {
     }
   } catch (e) {}
 }
+// Простейший веб-сервер для того, чтобы Render.com не отключал бота
+const http = require('http');
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('CGamer Bot is running 24/7\n');
+}).listen(process.env.PORT || 3000, () => {
+  console.log('Служебный веб-сервер запущен');
+});
