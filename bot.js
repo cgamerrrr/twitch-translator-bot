@@ -1,11 +1,10 @@
-
 const tmi = require('tmi.js');
 const axios = require('axios');
 const http = require('http');
 
-// ========================================
-// RENDER HTTP SERVER
-// ========================================
+// =====================================
+// RENDER SERVER
+// =====================================
 
 const PORT = process.env.PORT || 10000;
 
@@ -17,17 +16,17 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 HTTP сервер запущен на порту ${PORT}`);
+  console.log(`HTTP сервер запущен на порту ${PORT}`);
 });
 
-// ========================================
+// =====================================
 // TWITCH SETTINGS
-// ========================================
+// =====================================
 
-const token = (process.env.TWITCH_OAUTH || '').trim();
+const TWITCH_OAUTH = (process.env.TWITCH_OAUTH || '').trim();
 
-if (!token) {
-  console.error('❌ Не задан TWITCH_OAUTH в Render!');
+if (!TWITCH_OAUTH) {
+  console.error('Не задан TWITCH_OAUTH в Render!');
   process.exit(1);
 }
 
@@ -41,61 +40,100 @@ const client = new tmi.Client({
   },
   identity: {
     username: 'cgamer_bot',
-    password: token.startsWith('oauth:')
-      ? token
-      : `oauth:${token}`
+    password: TWITCH_OAUTH.startsWith('oauth:')
+      ? TWITCH_OAUTH
+      : `oauth:${TWITCH_OAUTH}`
   },
   channels: ['cgamer__']
 });
 
-// ========================================
-// COMMON FUNCTIONS
-// ========================================
+// =====================================
+// HELPERS
+// =====================================
 
-function normalize(value) {
-  return String(value || '')
-    .toLowerCase()
-    .trim()
-    .replace(/ё/g, 'е')
-    .replace(/\s+/g, ' ');
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function normalizeText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
 async function safeSay(channel, message) {
   try {
-    if (!message) return;
-
-    await client.say(
-      channel,
-      String(message).slice(0, 450)
-    );
+    await client.say(channel, message);
   } catch (error) {
     console.error('Ошибка отправки сообщения:', error.message);
   }
 }
 
-// ========================================
-// CURRENCY DICTIONARY
-// ========================================
+const ignoredUsers = new Set([
+  'cgamer_bot',
+  'nightbot',
+  'streamelements',
+  'moobot',
+  'sery_bot',
+  'jeetbot'
+]);
+
+// =====================================
+// TIME
+// =====================================
+
+const timeZones = {
+  'москва': 'Europe/Moscow',
+  'москве': 'Europe/Moscow',
+  'мск': 'Europe/Moscow',
+  'казань': 'Europe/Moscow',
+  'казани': 'Europe/Moscow',
+  'набережные челны': 'Europe/Moscow',
+  'набережных челнах': 'Europe/Moscow',
+  'челны': 'Europe/Moscow',
+  'санкт петербург': 'Europe/Moscow',
+  'питер': 'Europe/Moscow',
+  'екатеринбург': 'Asia/Yekaterinburg',
+  'новосибирск': 'Asia/Novosibirsk',
+  'омск': 'Asia/Omsk',
+  'лондон': 'Europe/London',
+  'париж': 'Europe/Paris',
+  'берлин': 'Europe/Berlin',
+  'варшава': 'Europe/Warsaw',
+  'нью йорк': 'America/New_York',
+  'лос анджелес': 'America/Los_Angeles',
+  'токио': 'Asia/Tokyo'
+};
+
+function getTime(city) {
+  const key = normalizeText(city).toLowerCase();
+  const zone = timeZones[key];
+
+  if (!zone) return null;
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: zone,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(new Date());
+}
+
+// =====================================
+// CURRENCY
+// =====================================
 
 const currencyDict = {
+  'доллар': 'USD',
+  'доллара': 'USD',
+  'долларов': 'USD',
+  'бакс': 'USD',
+  'баксов': 'USD',
+  'usd': 'USD',
+
+  'евро': 'EUR',
+  'eur': 'EUR',
+
   'рубль': 'RUB',
   'рубля': 'RUB',
   'рублей': 'RUB',
   'руб': 'RUB',
   'rub': 'RUB',
-
-  'доллар': 'USD',
-  'доллара': 'USD',
-  'долларов': 'USD',
-  'доллары': 'USD',
-  'usd': 'USD',
-
-  'евро': 'EUR',
-  'eur': 'EUR',
 
   'фунт': 'GBP',
   'фунта': 'GBP',
@@ -105,744 +143,503 @@ const currencyDict = {
   'юань': 'CNY',
   'юаня': 'CNY',
   'юаней': 'CNY',
-  'cny': 'CNY'
+  'cny': 'CNY',
+
+  'тенге': 'KZT',
+  'kzt': 'KZT'
 };
 
-function getCurrency(value) {
-  const key = normalize(value);
+function currencyCode(value) {
+  const key = normalizeText(value).toLowerCase();
   return currencyDict[key] || key.toUpperCase();
 }
 
-// ========================================
-// CITY TIMEZONES
-// ========================================
+let cbrCache = null;
+let cbrCacheTime = 0;
 
-const cities = {
-  'москва': 'Europe/Moscow',
-  'казань': 'Europe/Moscow',
-  'набережные челны': 'Europe/Moscow',
-  'челны': 'Europe/Moscow',
+async function getCBRRates() {
+  const now = Date.now();
 
-  'лондон': 'Europe/London',
-  'берлин': 'Europe/Berlin',
-  'варшава': 'Europe/Warsaw',
-  'париж': 'Europe/Paris',
-  'мадрид': 'Europe/Madrid',
-  'рим': 'Europe/Rome',
-  'амстердам': 'Europe/Amsterdam',
-  'стамбул': 'Europe/Istanbul',
-
-  'нью-йорк': 'America/New_York',
-  'нью йорк': 'America/New_York',
-  'new york': 'America/New_York',
-  'чикаго': 'America/Chicago',
-  'лос-анджелес': 'America/Los_Angeles',
-  'лос анджелес': 'America/Los_Angeles',
-  'вашингтон': 'America/New_York',
-  'торонто': 'America/Toronto',
-
-  'пекин': 'Asia/Shanghai',
-  'шанхай': 'Asia/Shanghai',
-  'токио': 'Asia/Tokyo',
-  'сеул': 'Asia/Seoul',
-  'бангкок': 'Asia/Bangkok',
-  'дубай': 'Asia/Dubai',
-  'дели': 'Asia/Kolkata',
-  'нью-дели': 'Asia/Kolkata',
-  'сингапур': 'Asia/Singapore',
-  'сидней': 'Australia/Sydney'
-};
-
-function getTime(city) {
-  const timezone = cities[normalize(city)];
-
-  if (!timezone) return null;
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    timeZone: timezone,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  }).format(new Date());
-}
-
-// ========================================
-// WEATHER
-// ========================================
-
-const weatherCodes = {
-  0: 'Ясно',
-  1: 'Преимущественно ясно',
-  2: 'Переменная облачность',
-  3: 'Пасмурно',
-  45: 'Туман',
-  48: 'Туман с изморозью',
-  51: 'Морось',
-  53: 'Умеренная морось',
-  55: 'Сильная морось',
-  56: 'Ледяная морось',
-  57: 'Сильная ледяная морось',
-  61: 'Небольшой дождь',
-  63: 'Дождь',
-  65: 'Сильный дождь',
-  66: 'Ледяной дождь',
-  67: 'Сильный ледяной дождь',
-  71: 'Небольшой снег',
-  73: 'Снег',
-  75: 'Сильный снег',
-  77: 'Снежные зёрна',
-  80: 'Ливень',
-  81: 'Сильный ливень',
-  82: 'Очень сильный ливень',
-  85: 'Снегопад',
-  86: 'Сильный снегопад',
-  95: 'Гроза',
-  96: 'Гроза с градом',
-  99: 'Сильная гроза с градом'
-};
-
-async function getWeather(city) {
-  try {
-    const geo = await axios.get(
-      'https://geocoding-api.open-meteo.com/v1/search',
-      {
-        params: {
-          name: city,
-          count: 1,
-          language: 'ru',
-          format: 'json'
-        },
-        timeout: 10000
-      }
-    );
-
-    if (!geo.data.results?.length) {
-      return `❌ Город "${city}" не найден.`;
-    }
-
-    const place = geo.data.results[0];
-
-    const response = await axios.get(
-      'https://api.open-meteo.com/v1/forecast',
-      {
-        params: {
-          latitude: place.latitude,
-          longitude: place.longitude,
-          current:
-            'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m',
-          temperature_unit: 'celsius',
-          wind_speed_unit: 'kmh',
-          timezone: 'auto'
-        },
-        timeout: 10000
-      }
-    );
-
-    const current = response.data.current;
-
-    if (!current) {
-      return '⚠️ Данные о погоде недоступны.';
-    }
-
-    const description =
-      weatherCodes[current.weather_code] || 'Неизвестно';
-
-    return `🌤️ ${place.name}: ${description}, 🌡️ ${Math.round(current.temperature_2m)}°C, ощущается ${Math.round(current.apparent_temperature)}°C, 💧 ${current.relative_humidity_2m}%, 💨 ветер ${Math.round(current.wind_speed_10m)} км/ч`;
-
-  } catch (error) {
-    console.error('Weather error:', error.message);
-    return '⚠️ Ошибка сервиса погоды.';
+  if (cbrCache && now - cbrCacheTime < 10 * 60 * 1000) {
+    return cbrCache;
   }
-}
 
-// ========================================
-// CURRENCY RATES
-// ========================================
-
-let currencyCache = null;
-let currencyCacheTime = 0;
-
-async function getRates() {
   try {
-    if (
-      currencyCache &&
-      Date.now() - currencyCacheTime < 10 * 60 * 1000
-    ) {
-      return currencyCache;
-    }
-
     const response = await axios.get(
       'https://www.cbr-xml-daily.ru/daily_json.js',
       { timeout: 10000 }
     );
 
-    currencyCache = response.data.Valute;
-    currencyCacheTime = Date.now();
+    cbrCache = response.data;
+    cbrCacheTime = now;
 
-    return currencyCache;
-
+    return cbrCache;
   } catch (error) {
-    console.error('Currency error:', error.message);
-    return null;
+    console.error('Ошибка курсов валют:', error.message);
+    return cbrCache;
   }
 }
-
-async function getRate(currency) {
-  const rates = await getRates();
-
-  if (!rates) {
-    return '⚠️ Не удалось получить курсы валют.';
-  }
-
-  currency = getCurrency(currency);
-
-  if (currency === 'RUB') {
-    return '💵 Российский рубль: 1.00 ₽';
-  }
-
-  if (!rates[currency]) {
-    return '❌ Валюта не найдена. Используйте USD, EUR, GBP, CNY.';
-  }
-
-  const item = rates[currency];
-
-  return `💵 ${item.Name}: ${(item.Value / item.Nominal).toFixed(2)} ₽`;
-}
-
-// ========================================
-// MONEY CONVERTER
-// ========================================
 
 async function convertMoney(amount, from, to) {
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return '❌ Сумма должна быть больше нуля.';
+  const rates = await getCBRRates();
+
+  if (!rates) return null;
+
+  const fromCode = currencyCode(from);
+  const toCode = currencyCode(to);
+
+  if (fromCode === toCode) return Number(amount);
+
+  function rubValue(code) {
+    if (code === 'RUB') return 1;
+
+    const item = rates.Valute?.[code];
+
+    if (!item) return null;
+
+    return Number(item.Value) / Number(item.Nominal);
   }
 
-  const rates = await getRates();
+  const fromRub = rubValue(fromCode);
+  const toRub = rubValue(toCode);
 
-  if (!rates) {
-    return '⚠️ Не удалось получить курсы валют.';
-  }
+  if (fromRub === null || toRub === null) return null;
 
-  from = getCurrency(from);
-  to = getCurrency(to);
-
-  function getRubRate(currency) {
-    if (currency === 'RUB') return 1;
-
-    if (!rates[currency]) return null;
-
-    return rates[currency].Value / rates[currency].Nominal;
-  }
-
-  const fromRate = getRubRate(from);
-  const toRate = getRubRate(to);
-
-  if (fromRate === null || toRate === null) {
-    return '❌ Неизвестная валюта. Используйте RUB, USD, EUR, GBP или CNY.';
-  }
-
-  const result = amount * fromRate / toRate;
-
-  return `💰 ${amount} ${from} = ${result.toFixed(2)} ${to}`;
+  return Number(amount) * fromRub / toRub;
 }
 
-// ========================================
-// TRANSLATION LANGUAGES
-// ========================================
+// =====================================
+// WEATHER
+// =====================================
 
-const languages = {
-  'английский': 'en',
-  'английский язык': 'en',
-  'en': 'en',
+const weatherCache = new Map();
 
-  'немецкий': 'de',
-  'de': 'de',
+async function getWeather(city) {
+  const cityName = normalizeText(city);
 
-  'французский': 'fr',
-  'fr': 'fr',
+  if (!cityName) return null;
 
-  'испанский': 'es',
-  'es': 'es',
+  const key = cityName.toLowerCase();
+  const cached = weatherCache.get(key);
 
-  'итальянский': 'it',
-  'it': 'it',
+  if (cached && Date.now() - cached.time < 10 * 60 * 1000) {
+    return cached.data;
+  }
 
-  'португальский': 'pt',
-  'pt': 'pt',
+  try {
+    const response = await axios.get(
+      `https://wttr.in/${encodeURIComponent(cityName)}`,
+      {
+        params: { format: 'j1' },
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        timeout: 15000
+      }
+    );
 
-  'китайский': 'zh-CN',
-  'японский': 'ja',
-  'ja': 'ja',
+    const current = response.data?.current_condition?.[0];
 
-  'корейский': 'ko',
-  'ko': 'ko',
+    if (!current) return null;
 
-  'польский': 'pl',
-  'pl': 'pl',
+    const data = {
+      city: cityName,
+      temp: current.temp_C,
+      feels: current.FeelsLikeC,
+      humidity: current.humidity,
+      wind: current.windspeedKmph
+    };
 
-  'турецкий': 'tr',
-  'tr': 'tr',
+    weatherCache.set(key, {
+      time: Date.now(),
+      data
+    });
 
-  'арабский': 'ar',
-  'ar': 'ar',
+    return data;
+  } catch (error) {
+    console.error('Ошибка погоды:', error.message);
 
-  'украинский': 'uk',
-  'uk': 'uk',
+    if (cached) return cached.data;
 
-  'белорусский': 'be',
-  'be': 'be',
+    return null;
+  }
+}
 
-  'чешский': 'cs',
-  'cs': 'cs',
+// =====================================
+// TRANSLATION
+// =====================================
 
-  'нидерландский': 'nl',
-  'nl': 'nl',
-
-  'шведский': 'sv',
-  'sv': 'sv',
-
-  'норвежский': 'no',
-  'no': 'no',
-
-  'финский': 'fi',
-  'fi': 'fi',
-
-  'греческий': 'el',
-  'el': 'el',
-
-  'иврит': 'iw',
-  'he': 'iw',
-
-  'хинди': 'hi',
-  'hi': 'hi',
-
-  'тайский': 'th',
-  'th': 'th',
-
-  'вьетнамский': 'vi',
-  'vi': 'vi',
-
-  'индонезийский': 'id',
-  'id': 'id',
-
-  'румынский': 'ro',
-  'ro': 'ro',
-
-  'венгерский': 'hu',
-  'hu': 'hu',
-
-  'датский': 'da',
-  'da': 'da',
-
-  'русский': 'ru',
-  'ru': 'ru'
-};
-
-// ========================================
-// TRANSLATION CACHE AND QUEUE
-// ========================================
+const supportedLanguages = new Set([
+  'ru', 'en', 'de', 'fr', 'es',
+  'it', 'pl', 'uk', 'tr', 'ja',
+  'ko', 'zh'
+]);
 
 const translationCache = new Map();
-const translationQueue = [];
 
-const CACHE_TIME = 30 * 60 * 1000;
-const MAX_CACHE = 300;
-const MAX_QUEUE = 12;
-const TRANSLATION_DELAY = 2500;
+async function translateText(target, text) {
+  target = String(target || '').trim().toLowerCase();
+  text = normalizeText(text);
 
-let translationWorkerRunning = false;
-let translationPausedUntil = 0;
-
-function getCachedTranslation(key) {
-  const item = translationCache.get(key);
-
-  if (!item) return null;
-
-  if (Date.now() - item.time > CACHE_TIME) {
-    translationCache.delete(key);
+  if (!supportedLanguages.has(target) || !text) {
     return null;
   }
 
-  return item.value;
-}
-
-function saveTranslation(key, value) {
-  if (translationCache.size >= MAX_CACHE) {
-    const oldestKey = translationCache.keys().next().value;
-    translationCache.delete(oldestKey);
+  if (text.length > 500) {
+    text = text.slice(0, 500);
   }
 
-  translationCache.set(key, {
-    value,
-    time: Date.now()
-  });
-}
+  const cacheKey = `${target}:${text.toLowerCase()}`;
 
-async function translateRequest(text, target, source) {
-  const response = await axios.get(
-    'https://translate.googleapis.com/translate_a/single',
-    {
-      params: {
-        client: 'gtx',
-        sl: source,
-        tl: target,
-        dt: 't',
-        q: text
-      },
-      timeout: 15000
-    }
-  );
-
-  const translated = response.data[0]
-    .map(part => part[0] || '')
-    .join('');
-
-  if (!translated) return null;
-
-  return {
-    text: translated,
-    source: response.data[2] || source
-  };
-}
-
-async function processTranslationQueue() {
-  if (translationWorkerRunning) return;
-
-  translationWorkerRunning = true;
+  if (translationCache.has(cacheKey)) {
+    return translationCache.get(cacheKey);
+  }
 
   try {
-    while (translationQueue.length > 0) {
-      const job = translationQueue.shift();
-
-      try {
-        const pause = translationPausedUntil - Date.now();
-
-        if (pause > 0) {
-          await sleep(pause);
-        }
-
-        let result;
-
-        try {
-          result = await translateRequest(
-            job.text,
-            job.target,
-            job.source
-          );
-        } catch (error) {
-          if (error.response?.status === 429) {
-            console.log('⚠️ Google Translate: 429. Пауза 30 секунд.');
-
-            translationPausedUntil = Date.now() + 30000;
-
-            await sleep(30000);
-
-            result = await translateRequest(
-              job.text,
-              job.target,
-              job.source
-            );
-          } else {
-            throw error;
-          }
-        }
-
-        if (result) {
-          saveTranslation(job.key, result);
-        }
-
-        job.resolve(result || null);
-
-      } catch (error) {
-        console.error('Translation error:', error.message);
-        job.resolve(null);
+    const response = await axios.get(
+      'https://api.mymemory.translated.net/get',
+      {
+        params: {
+          q: text,
+          langpair: `ru|${target}`
+        },
+        timeout: 15000
       }
+    );
 
-      await sleep(TRANSLATION_DELAY);
-    }
-  } finally {
-    translationWorkerRunning = false;
+    const translated = response.data?.responseData?.translatedText;
 
-    if (translationQueue.length > 0) {
-      processTranslationQueue();
+    if (!translated) return null;
+
+    translationCache.set(cacheKey, translated);
+
+    if (translationCache.size > 500) {
+      const firstKey = translationCache.keys().next().value;
+      translationCache.delete(firstKey);
     }
+
+    return translated;
+  } catch (error) {
+    console.error('Ошибка перевода:', error.message);
+    return null;
   }
 }
 
-function translateText(text, target = 'ru', source = 'auto') {
-  if (!text || text.length > 400) {
-    return Promise.resolve(null);
-  }
+// =====================================
+// FISHING GAME
+// =====================================
 
-  const key = `${source}|${target}|${normalize(text)}`;
-
-  const cached = getCachedTranslation(key);
-
-  if (cached) {
-    return Promise.resolve(cached);
-  }
-
-  if (translationQueue.length >= MAX_QUEUE) {
-    console.log('⚠️ Очередь переводов заполнена.');
-    return Promise.resolve(null);
-  }
-
-  return new Promise(resolve => {
-    translationQueue.push({
-      text,
-      target,
-      source,
-      key,
-      resolve
-    });
-
-    processTranslationQueue();
-  });
-}
-
-// ========================================
-// MESSAGE HANDLER
-// ========================================
-
-const userTranslationCooldown = new Map();
-
-const ignoredBots = [
-  'cgamer_bot',
-  'nightbot',
-  'streamelements',
-  'jeetbot',
-  'sery_bot',
-  'moobot'
+const fishingResults = [
+  { text: '🐟 Поймал карася! Хороший улов!', weight: 10 },
+  { text: '🐠 Поймал окуня!', weight: 10 },
+  { text: '🐡 Поймал леща!', weight: 10 },
+  { text: '🐟 Поймал плотву!', weight: 10 },
+  { text: '🎣 Поймал щуку!', weight: 8 },
+  { text: '🐟 Поймал большого сома!', weight: 5 },
+  { text: '🐬 Неожиданно! Попался дельфин. Отпустил обратно!', weight: 2 },
+  { text: '💎 На крючке оказался сундук с сокровищами!', weight: 2 },
+  { text: '🍀 Золотая рыбка! Невероятная удача!', weight: 1 },
+  { text: '🐟 Двойной улов! Сразу две рыбки!', weight: 5 },
+  { text: '🌿 Поймал водоросли...', weight: 8 },
+  { text: '🪨 Вытащил камень. Зато тяжёлый!', weight: 5 },
+  { text: '🥾 Вместо рыбы вытащил старый сапог 😂', weight: 5 },
+  { text: '🌊 Рыба сорвалась с крючка!', weight: 7 },
+  { text: '🎣 Сегодня клёва нет. Попробуй ещё раз!', weight: 7 },
+  { text: '🦈 Что-то огромное потянуло леску и скрылось!', weight: 2 },
+  { text: '💦 Поплавок ушёл под воду, но рыбы нет!', weight: 3 }
 ];
+
+function fishing() {
+  const totalWeight = fishingResults.reduce(
+    (sum, item) => sum + item.weight,
+    0
+  );
+
+  let random = Math.random() * totalWeight;
+
+  for (const item of fishingResults) {
+    random -= item.weight;
+
+    if (random <= 0) {
+      return item.text;
+    }
+  }
+
+  return '🌊 Сегодня без улова!';
+}
+
+// Защита от слишком частого использования рыбалки
+const fishingCooldown = new Map();
+const FISHING_COOLDOWN_MS = 15000;
+
+// =====================================
+// COMMAND HANDLER
+// =====================================
+
+async function handleCommand(channel, username, message) {
+  const parts = message.trim().split(/\s+/);
+  const command = parts[0].toLowerCase();
+
+  // HELP
+  if (command === '!помощь' || command === '!help') {
+    await safeSay(
+      channel,
+      '🤖 Команды: !время город | !погода город | !курс USD | !деньги 100 доллар рубль | !перевод en текст | !рыбалка'
+    );
+    return true;
+  }
+
+  // TIME
+  if (command === '!время' || command === '!time') {
+    const city = parts.slice(1).join(' ');
+
+    if (!city) {
+      await safeSay(channel, '🕐 Использование: !время Казань');
+      return true;
+    }
+
+    const time = getTime(city);
+
+    if (!time) {
+      await safeSay(channel, `❌ Город "${city}" не найден.`);
+      return true;
+    }
+
+    await safeSay(channel, `🕐 Время в ${city}: ${time}`);
+    return true;
+  }
+
+  // WEATHER
+  if (command === '!погода' || command === '!weather') {
+    const city = parts.slice(1).join(' ');
+
+    if (!city) {
+      await safeSay(
+        channel,
+        '🌤️ Использование: !погода Набережные Челны'
+      );
+      return true;
+    }
+
+    const weather = await getWeather(city);
+
+    if (!weather) {
+      await safeSay(
+        channel,
+        '⚠️ Не удалось получить погоду. Попробуйте позже.'
+      );
+      return true;
+    }
+
+    await safeSay(
+      channel,
+      `🌤️ ${weather.city}: ${weather.temp}°C, ощущается ${weather.feels}°C, влажность ${weather.humidity}%, ветер ${weather.wind} км/ч`
+    );
+
+    return true;
+  }
+
+  // CURRENCY RATE
+  if (command === '!курс' || command === '!rate') {
+    const code = currencyCode(parts[1] || 'USD');
+    const rates = await getCBRRates();
+
+    if (!rates) {
+      await safeSay(channel, '⚠️ Не удалось получить курсы валют.');
+      return true;
+    }
+
+    if (code === 'RUB') {
+      await safeSay(channel, '💰 1 RUB = 1 RUB');
+      return true;
+    }
+
+    const item = rates.Valute?.[code];
+
+    if (!item) {
+      await safeSay(channel, `❌ Валюта ${code} не найдена.`);
+      return true;
+    }
+
+    const value = Number(item.Value) / Number(item.Nominal);
+
+    await safeSay(
+      channel,
+      `💰 1 ${code} = ${value.toFixed(2)} RUB`
+    );
+
+    return true;
+  }
+
+  // MONEY CONVERSION
+  if (command === '!деньги' || command === '!money') {
+    if (parts.length < 4) {
+      await safeSay(
+        channel,
+        '💰 Использование: !деньги 100 доллар рубль'
+      );
+      return true;
+    }
+
+    const amount = Number(parts[1]);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      await safeSay(channel, '❌ Укажите правильную сумму.');
+      return true;
+    }
+
+    const from = parts[2];
+    const to = parts[3];
+
+    const result = await convertMoney(amount, from, to);
+
+    if (result === null) {
+      await safeSay(
+        channel,
+        '❌ Не удалось выполнить конвертацию.'
+      );
+      return true;
+    }
+
+    await safeSay(
+      channel,
+      `💱 ${amount} ${currencyCode(from)} ≈ ${result.toFixed(2)} ${currencyCode(to)}`
+    );
+
+    return true;
+  }
+
+  // TRANSLATION
+  if (command === '!перевод' || command === '!translate') {
+    if (parts.length < 3) {
+      await safeSay(
+        channel,
+        '🌐 Использование: !перевод en Привет как дела'
+      );
+      return true;
+    }
+
+    const target = parts[1];
+    const text = parts.slice(2).join(' ');
+
+    const translated = await translateText(target, text);
+
+    if (!translated) {
+      await safeSay(channel, '⚠️ Не удалось выполнить перевод.');
+      return true;
+    }
+
+    await safeSay(channel, `🌐 ${translated}`);
+    return true;
+  }
+
+  // FISHING
+  if (
+    command === '!рыбалка' ||
+    command === '!рыба' ||
+    command === '!fish'
+  ) {
+    const now = Date.now();
+    const lastUse = fishingCooldown.get(username) || 0;
+    const remaining = FISHING_COOLDOWN_MS - (now - lastUse);
+
+    if (remaining > 0) {
+      await safeSay(
+        channel,
+        `🎣 ${username}, подожди ${Math.ceil(remaining / 1000)} сек. перед следующей рыбалкой!`
+      );
+      return true;
+    }
+
+    fishingCooldown.set(username, now);
+
+    const result = fishing();
+
+    await safeSay(
+      channel,
+      `🎣 ${username} закинул удочку! ${result}`
+    );
+
+    return true;
+  }
+
+  return false;
+}
+
+// =====================================
+// TWITCH MESSAGE
+// =====================================
 
 client.on('message', async (channel, tags, message, self) => {
   if (self) return;
 
-  const text = message.trim();
-  const lower = normalize(text);
   const username = (tags.username || '').toLowerCase();
 
-  if (!text) return;
+  if (ignoredUsers.has(username)) return;
 
-  console.log(`📩 [${channel}] ${username}: ${text}`);
+  const text = normalizeText(message);
+
+  if (!text || !text.startsWith('!')) return;
+
+  console.log(`Команда от ${username}: ${text}`);
 
   try {
-    // HELP
-    if (lower === '!помощь' || lower === '!help') {
-      await safeSay(
-        channel,
-        '🤖 Команды: !time город | !weather город | !курс USD | !money 100 доллар рубль | !перевод en Привет. Автоперевод иностранных сообщений включён.'
-      );
-      return;
-    }
-
-    // TIME
-    if (
-      lower.startsWith('!time ') ||
-      lower.startsWith('!время ')
-    ) {
-      const city = text.substring(text.indexOf(' ') + 1).trim();
-      const time = getTime(city);
-
-      await safeSay(
-        channel,
-        time
-          ? `🕐 Время в ${city}: ${time}`
-          : `❌ Не знаю часовой пояс города "${city}".`
-      );
-
-      return;
-    }
-
-    // WEATHER
-    if (
-      lower.startsWith('!weather ') ||
-      lower.startsWith('!погода ')
-    ) {
-      const city = text.substring(text.indexOf(' ') + 1).trim();
-
-      if (!city) {
-        await safeSay(channel, '🌤️ Использование: !погода город');
-        return;
-      }
-
-      await safeSay(channel, await getWeather(city));
-      return;
-    }
-
-    // CURRENCY RATE
-    if (
-      lower === '!rate' ||
-      lower.startsWith('!rate ') ||
-      lower === '!курс' ||
-      lower.startsWith('!курс ')
-    ) {
-      const parts = text.split(/\s+/);
-
-      if (!parts[1]) {
-        await safeSay(channel, '💵 Использование: !курс USD');
-        return;
-      }
-
-      await safeSay(channel, await getRate(parts[1]));
-      return;
-    }
-
-    // MONEY CONVERTER
-    if (
-      lower.startsWith('!money ') ||
-      lower.startsWith('!деньги ')
-    ) {
-      const args = text.split(/\s+/);
-
-      if (args.length < 4) {
-        await safeSay(
-          channel,
-          '💰 Использование: !деньги 100 доллар рубль'
-        );
-        return;
-      }
-
-      const amount = parseFloat(args[1].replace(',', '.'));
-
-      await safeSay(
-        channel,
-        await convertMoney(amount, args[2], args[3])
-      );
-
-      return;
-    }
-
-    // MANUAL TRANSLATION
-    if (
-      lower.startsWith('!перевод ') ||
-      lower.startsWith('!translate ')
-    ) {
-      const parts = text.split(/\s+/);
-      const targetName = normalize(parts[1] || '');
-      const target = languages[targetName];
-
-      if (!target || parts.length < 3) {
-        await safeSay(
-          channel,
-          '🌐 Использование: !перевод en Привет | !перевод немецкий Привет'
-        );
-        return;
-      }
-
-      const original = parts.slice(2).join(' ');
-      const result = await translateText(original, target, 'ru');
-
-      if (!result) {
-        await safeSay(
-          channel,
-          '⚠️ Не удалось выполнить перевод. Попробуйте позже.'
-        );
-        return;
-      }
-
-      await safeSay(
-        channel,
-        `🌐 Перевод (${target}): ${result.text}`
-      );
-
-      return;
-    }
-
-    // AUTO TRANSLATION
-    if (text.startsWith('!')) return;
-
-    if (ignoredBots.includes(username)) return;
-
-    if (text.length < 3 || text.length > 400) return;
-
-    const now = Date.now();
-
-    if (
-      now - (userTranslationCooldown.get(username) || 0) < 6000
-    ) {
-      return;
-    }
-
-    userTranslationCooldown.set(username, now);
-
-    const result = await translateText(text, 'ru', 'auto');
-
-    if (!result) return;
-
-    if (
-      result.source &&
-      result.source.toLowerCase().startsWith('ru')
-    ) {
-      return;
-    }
-
-    if (
-      result.text &&
-      normalize(result.text) !== normalize(text)
-    ) {
-      await safeSay(
-        channel,
-        `🌐 Перевод: ${result.text}`
-      );
-    }
-
+    await handleCommand(channel, username, text);
   } catch (error) {
-    console.error('Ошибка обработки сообщения:', error);
+    console.error('Ошибка команды:', error.message);
+
+    await safeSay(
+      channel,
+      '⚠️ Произошла ошибка при выполнении команды.'
+    );
   }
 });
 
-// ========================================
-// TWITCH EVENTS AND CONNECTION
-// ========================================
+// =====================================
+// TWITCH EVENTS
+// =====================================
 
 client.on('connected', (address, port) => {
-  console.log(`✅ Подключено к Twitch: ${address}:${port}`);
+  console.log(`Подключено к Twitch: ${address}:${port}`);
+  console.log('================================');
+  console.log('TWITCH BOT ПОДКЛЮЧЁН!');
+  console.log('Канал: cgamer__');
+  console.log('Погода включена');
+  console.log('Валюты включены');
+  console.log('Время включено');
+  console.log('Перевод включён');
+  console.log('Рыбалка включена');
+  console.log('================================');
 });
 
 client.on('join', (channel, username, self) => {
   if (self) {
-    console.log(`✅ Бот вошёл в канал ${channel}`);
+    console.log(`Бот вошёл в канал ${channel}`);
   }
 });
 
 client.on('disconnected', reason => {
-  console.log('⚠️ Twitch отключён:', reason);
+  console.log(`Twitch отключён: ${reason}`);
 });
 
-client.on('notice', (channel, msgid, message) => {
-  console.log('Twitch notice:', message);
+client.on('reconnect', () => {
+  console.log('Переподключение к Twitch...');
 });
 
-client.on('error', error => {
-  console.error('Twitch client error:', error);
-});
-
-client.connect()
-  .then(() => {
-    console.log('======================================');
-    console.log('🤖 TWITCH BOT ПОДКЛЮЧЁН!');
-    console.log('📡 Канал: cgamer__');
-    console.log('🌤️ Погода включена');
-    console.log('💰 Валюты включены');
-    console.log('🕐 Время включено');
-    console.log('🌐 Перевод включён');
-    console.log('======================================');
-  })
-  .catch(error => {
-    console.error('❌ Twitch connection error:', error);
-  });
-
-// ========================================
-// GLOBAL ERROR HANDLING
-// ========================================
+// =====================================
+// GLOBAL ERRORS
+// =====================================
 
 process.on('unhandledRejection', error => {
-  console.error('Unhandled rejection:', error);
+  console.error('Unhandled Rejection:', error);
 });
 
 process.on('uncaughtException', error => {
-  console.error('Critical error:', error);
+  console.error('Uncaught Exception:', error);
+});
+
+// =====================================
+// CONNECT
+// =====================================
+
+client.connect().catch(error => {
+  console.error('Ошибка подключения к Twitch:', error);
 });
