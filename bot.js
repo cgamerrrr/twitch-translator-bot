@@ -116,9 +116,9 @@ async function onMessageHandler(channel, tags, msg, self) {
     let opt = { hour: '2-digit', minute: '2-digit', hour12: false };
     if (!city) return client.say(channel, `🕒 Местное время: ${new Date().toLocaleTimeString('ru-RU', opt)}`);
     try {
-      const trans = await axios.get('https://googleapis.com' + encodeURIComponent(city));
-      if (trans.data && trans.data[0] && trans.data[0][0]) {
-        let en = trans.data[0][0][0].trim().replace(/\s+/g, '_');
+      const trans = await axios.get('https://lingva.ml' + encodeURIComponent(city));
+      if (trans.data && trans.data.translation) {
+        let en = trans.data.translation.trim().replace(/\s+/g, '_');
         let regions = ['Europe', 'Asia', 'America', 'Australia', 'Africa'];
         let tz = null;
         for (let r of regions) {
@@ -139,15 +139,15 @@ async function onMessageHandler(channel, tags, msg, self) {
     let text = words.slice(2).join(' '); 
     if (!lang || !text) return;
     try {
-      const res = await axios.get('https://googleapis.com' + lang + '&dt=t&q=' + encodeURIComponent(text));
-      if (res.data && res.data[0] && res.data[0][0]) {
-        client.say(channel, `🌐 [${lang.toUpperCase()}] ${authorName}: ${res.data[0][0][0].trim()}`);
+      const res = await axios.get('https://lingva.ml' + lang + '/' + encodeURIComponent(text));
+      if (res.data && res.data.translation) {
+        client.say(channel, `🌐 [${lang.toUpperCase()}] ${authorName}: ${res.data.translation.trim()}`);
       }
     } catch (e) {}
     return;
   }
 
-  // --- БЛОК 2: АВТОПЕРЕВОДЧИК ЧАТА НА РУССКИЙ ---
+  // --- БЛОК 2: СВЕРХНАДЁЖНЫЙ АВТОПЕРЕВОДЧИК ЧАТА ЧЕРЕЗ LINGVA API ---
   let textToTranslate = msg;
   if (tags.emotes) {
     const positions = [];
@@ -166,17 +166,16 @@ async function onMessageHandler(channel, tags, msg, self) {
   if (!textToTranslate || textToTranslate.length < 2) return;
 
   try {
-    // Используем клиентский RPC-шлюз Google, который возвращает массив с переводом и исходным языком
-    const response = await axios.get('https://googleapis.com', {
-      params: { client: 'gtx', sl: 'auto', tl: 'ru', dt: 't', q: textToTranslate },
+    // Отправляем запрос на стабильное открытое API Lingva (автоопределение языка -> русский)
+    const response = await axios.get('https://lingva.mlru/' + encodeURIComponent(textToTranslate), {
       timeout: 4000
     });
     
-    if (response.data && response.data[0] && response.data[0][0]) {
-      const translatedText = response.data[0][0][0].trim();
-      const detectedLang = response.data[2]; // Точный код определенного языка (например: 'en', 'es', 'ru')
+    if (response.data && response.data.translation) {
+      const translatedText = response.data.translation.trim();
+      const detectedLang = response.data.info?.detectedSourceInformedLanguage || response.data.info?.detectedSourceLanguage || '';
       
-      // Переводим строго если язык оригинала НЕ русский ('ru') и текст реально изменился
+      // Переводим строго если язык оригинала НЕ русский ('ru') и перевод отличается от оригинала
       if (detectedLang !== 'ru' && translatedText.toLowerCase() !== textToTranslate.toLowerCase()) {
         client.say(channel, `🌐 [Перевод] ${authorName}: ${translatedText}`);
       }
