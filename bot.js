@@ -3,10 +3,7 @@ const axios = require('axios');
 const translate = require('@iamtraction/google-translate');
 
 const opts = {
-  identity: { 
-    username: 'cgamer_bot', 
-    password: process.env.TWITCH_OAUTH // Безопасное чтение токена из памяти сервера
-  },
+  identity: { username: 'cgamer_bot', password: process.env.TWITCH_OAUTH },
   channels: ['cgamer__']
 };
 
@@ -32,6 +29,8 @@ async function onMessageHandler(channel, tags, msg, self) {
   const wordsLower = lowerMsg.split(' ').filter(w => w.trim().length > 0);
 
   const authorName = tags['display-name'] || tags['username'];
+
+  // --- БЛОК 1: КОМАНДЫ ---
 
   if (lowerMsg === '!помощь') {
     client.say(channel, `🤖 Способности бота: 🌐 1) Авто-перевод иностранного чата на русский. | 🕒 2) !time <город> — Время в 24ч (Пример: !time токио). | 🌤 3) !weather <город> — Погода в °C (Пример: !weather сочи). | 💵 4) !rate <валюта> — Курс ЦБ к рублю (usd, eur). | 💱 5) !money <сумма> <из> <в> — Конвертер (Пример: !money 100 доллар рубль). | 🗺 6) !tr <код> <текст> — Перевод (Коды: en, es, de, fr, ja).`);
@@ -96,7 +95,7 @@ async function onMessageHandler(channel, tags, msg, self) {
         }
 
         let finalResult = ((amount * fromRateInRub) / toRateInRub).toFixed(2);
-        client.say(channel, `💱 ... шт: ${amount} ${fromC} = ${finalResult} ${toC}`);
+        client.say(channel, `💱 Конвертация: ${amount} ${fromC} = ${finalResult} ${toC}`);
       }
     } catch (e) { client.say(channel, `⚠ Ошибка конвертации.`); }
     return;
@@ -144,6 +143,7 @@ async function onMessageHandler(channel, tags, msg, self) {
     return;
   }
 
+  // --- БЛОК 2: НАДЁЖНЫЙ АВТОПЕРЕВОДЧИК ЧАТА ЧЕРЕЗ MYMEMORY API ---
   let textToTranslate = msg;
   if (tags.emotes) {
     const positions = [];
@@ -158,15 +158,37 @@ async function onMessageHandler(channel, tags, msg, self) {
     for (const p of positions) arr.splice(p.start, p.end - p.start + 1);
     textToTranslate = arr.join('').replace(/\s+/g, ' ').trim();
   }
+  
   if (!textToTranslate || textToTranslate.length < 2) return;
+
   try {
-    const res = await translate(textToTranslate, { to: 'ru' });
-    if (res?.text && res.from.language.iso !== 'ru' && res.text.toLowerCase().trim() !== textToTranslate.toLowerCase().trim()) {
-      client.say(channel, `🌐 [Перевод] ${authorName}: ${res.text.trim()}`);
+    // Делаем независимый и стабильный запрос к API MyMemory для автоопределения и перевода на русский
+    const response = await axios.get('https://translated.net', {
+      params: {
+        q: textToTranslate,
+        langpair: 'autodetect|ru'
+      },
+      timeout: 4000
+    });
+    
+    if (response.data && response.data.responseData && response.data.responseData.translatedText) {
+      const translatedText = response.data.responseData.translatedText.trim();
+      const detectedLang = response.data.responseDetails || '';
+      
+      // Игнорируем перевод, если MyMemory определил исходный язык как русский
+      if (!detectedLang.toLowerCase().includes('from ru') && translatedText.toLowerCase() !== textToTranslate.toLowerCase()) {
+        client.say(channel, `🌐 [Перевод] ${authorName}: ${translatedText}`);
+      }
     }
-  } catch (e) {}
+  } catch (e) {
+    console.log('Автоперевод пропущен:', e.message);
+  }
 }
-// Простейший веб-сервер для того, чтобы Render.com не отключал бота
+
+function onConnectedHandler(addr, port) {
+  console.log(`* Бот успешно подключился к ${addr}:${port}`);
+}
+
 const http = require('http');
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
