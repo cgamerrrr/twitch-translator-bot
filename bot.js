@@ -1,670 +1,34 @@
-
 const tmi = require('tmi.js');
 const axios = require('axios');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-// ==========================================
-// TWITCH
-// ==========================================
+// ==================================================
+// НАСТРОЙКИ
+// ==================================================
 
-const BOT_USERNAME = 'cgamer_bot';
 const CHANNEL = 'cgamer__';
+const BOT_NAME = 'cgamer_bot';
+const PORT = process.env.PORT || 10000;
+
+const DATA_FILE = path.join(__dirname, 'fish_data.json');
 
 const client = new tmi.Client({
     options: { debug: false },
-    connection: { reconnect: true, secure: true },
+    connection: {
+        secure: true,
+        reconnect: true
+    },
     identity: {
-        username: BOT_USERNAME,
+        username: BOT_NAME,
         password: process.env.TWITCH_OAUTH
     },
     channels: [CHANNEL]
 });
 
-// ==========================================
-// RENDER HTTP
-// ==========================================
-
-const PORT = process.env.PORT || 10000;
-
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Twitch bot is running!');
-}).listen(PORT, '0.0.0.0', () => {
-    console.log(`HTTP сервер запущен: ${PORT}`);
-});
-
-// ==========================================
-// ПОДКЛЮЧЕНИЕ
-// ==========================================
-
-client.connect().catch(console.error);
-
-client.on('connected', (address, port) => {
-    console.log(`Подключено: ${address}:${port}`);
-    console.log('TWITCH BOT ПОДКЛЮЧЁН!');
-    console.log(`Канал: ${CHANNEL}`);
-});
-
-client.on('disconnected', reason => {
-    console.log('Отключение:', reason);
-});
-
-// ==========================================
-// ИГРОВАЯ БАЗА
-// ==========================================
-
-const DATA_FILE = path.join(__dirname, 'profiles.json');
-
-let database = { users: {} };
-
-try {
-    if (fs.existsSync(DATA_FILE)) {
-        database = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-        if (!database.users) database.users = {};
-    }
-} catch (error) {
-    console.error('Ошибка загрузки базы:', error);
-}
-
-function saveDatabase() {
-    try {
-        fs.writeFileSync(
-            DATA_FILE,
-            JSON.stringify(database, null, 2)
-        );
-    } catch (error) {
-        console.error('Ошибка сохранения базы:', error);
-    }
-}
-
-function getProfile(username) {
-    username = username.toLowerCase();
-
-    if (!database.users[username]) {
-        database.users[username] = {
-            coins: 100,
-            xp: 0,
-            level: 1,
-            fishCaught: 0,
-            rareFish: 0,
-            fishingCount: 0,
-            rod: 'basic',
-            lastDaily: 0
-        };
-
-        saveDatabase();
-    }
-
-    return database.users[username];
-}
-
-// ==========================================
-// ОПЫТ И УРОВНИ
-// ==========================================
-
-function addXP(username, amount) {
-    const user = getProfile(username);
-
-    user.xp += amount;
-
-    let needed = user.level * 100;
-
-    while (user.xp >= needed) {
-        user.xp -= needed;
-        user.level++;
-        user.coins += 50;
-
-        client.say(
-            CHANNEL,
-            `🎉 ${username} достиг ${user.level} уровня! Бонус: 50 монет!`
-        );
-
-        needed = user.level * 100;
-    }
-
-    saveDatabase();
-}
-
-// ==========================================
-// МАГАЗИН
-// ==========================================
-
-const shop = {
-    'удочка': {
-        name: 'Улучшенная удочка',
-        price: 500,
-        id: 'advanced'
-    },
-    'золотая удочка': {
-        name: 'Золотая удочка',
-        price: 2000,
-        id: 'gold'
-    }
-};
-
-function showShop() {
-    return '🛒 Магазин: удочка — 500 монет | золотая удочка — 2000 монет. Покупка: !купить удочка';
-}
-
-function buyItem(username, itemName) {
-    const user = getProfile(username);
-    const item = shop[itemName.toLowerCase()];
-
-    if (!item) {
-        return '❌ Такого товара нет в магазине.';
-    }
-
-    const rodPower = {
-        basic: 0,
-        advanced: 1,
-        gold: 2
-    };
-
-    if (rodPower[user.rod] >= rodPower[item.id]) {
-        return '❌ У тебя уже есть такая или более хорошая удочка.';
-    }
-
-    if (user.coins < item.price) {
-        return `❌ Не хватает монет. Нужно ${item.price}, у тебя ${user.coins}.`;
-    }
-
-    user.coins -= item.price;
-    user.rod = item.id;
-
-    saveDatabase();
-
-    return `🎉 ${username} купил: ${item.name}!`;
-}
-
-// ==========================================
-// ЕЖЕДНЕВНАЯ НАГРАДА
-// ==========================================
-
-function dailyReward(username) {
-    const user = getProfile(username);
-    const now = Date.now();
-    const day = 24 * 60 * 60 * 1000;
-
-    if (now - user.lastDaily < day) {
-        const remaining = day - (now - user.lastDaily);
-        const hours = Math.ceil(remaining / (60 * 60 * 1000));
-
-        return `⏳ ${username}, следующая награда через ${hours} ч.`;
-    }
-
-    user.lastDaily = now;
-    user.coins += 100;
-
-    addXP(username, 20);
-    saveDatabase();
-
-    return `🎁 ${username} получил 100 монет и 20 опыта!`;
-}
-
-// ==========================================
-// РЫБАЛКА
-// ==========================================
-
-const fish = [
-    { name: 'карася', coins: 15, xp: 10 },
-    { name: 'окуня', coins: 20, xp: 12 },
-    { name: 'плотву', coins: 10, xp: 8 },
-    { name: 'леща', coins: 25, xp: 15 },
-    { name: 'карпа', coins: 35, xp: 20 },
-    { name: 'щуку', coins: 45, xp: 25 },
-    { name: 'судака', coins: 55, xp: 30 },
-    { name: 'сома', coins: 80, xp: 40 },
-    { name: 'форель', coins: 100, xp: 50 }
-];
-
-const rareFish = [
-    { name: 'золотую рыбку', coins: 250, xp: 100 },
-    { name: 'легендарного осетра', coins: 500, xp: 150 },
-    { name: 'мифического карпа', coins: 1000, xp: 250 }
-];
-
-const fishingCooldown = new Map();
-
-function fishing(username) {
-    const now = Date.now();
-    const last = fishingCooldown.get(username);
-
-    if (last && now - last < 15000) {
-        const seconds = Math.ceil((15000 - (now - last)) / 1000);
-        return `⏳ ${username}, подожди ${seconds} сек.`;
-    }
-
-    fishingCooldown.set(username, now);
-
-    const user = getProfile(username);
-    user.fishingCount++;
-
-    let chance = Math.random();
-
-    const bonus = {
-        basic: 0,
-        advanced: 0.05,
-        gold: 0.12
-    };
-
-    const rareChance = 0.05 + bonus[user.rod];
-
-    let caught;
-
-    if (chance < rareChance) {
-        caught = rareFish[
-            Math.floor(Math.random() * rareFish.length)
-        ];
-
-        user.rareFish++;
-    } else if (chance < rareChance + 0.20) {
-        saveDatabase();
-        return `🎣 ${username} закинул удочку, но сегодня без улова!`;
-    } else {
-        caught = fish[
-            Math.floor(Math.random() * fish.length)
-        ];
-    }
-
-    user.coins += caught.coins;
-    user.fishCaught++;
-
-    addXP(username, caught.xp);
-    saveDatabase();
-
-    return `🎣 ${username} поймал ${caught.name}! +${caught.coins} монет, +${caught.xp} опыта.`;
-}
-
-// ==========================================
-// ПРОФИЛЬ
-// ==========================================
-
-function showProfile(username) {
-    const user = getProfile(username);
-
-    return `👤 ${username} | ⭐ Уровень: ${user.level} | Опыт: ${user.xp}/${user.level * 100} | 💰 Монеты: ${user.coins} | 🐟 Рыбы: ${user.fishCaught} | 🌟 Редкие рыбы: ${user.rareFish}`;
-}
-
-// ==========================================
-// БАЛАНС
-// ==========================================
-
-function showBalance(username) {
-    const user = getProfile(username);
-
-    return `💰 ${username}, твой баланс: ${user.coins} монет.`;
-}
-
-// ==========================================
-// ТОП
-// ==========================================
-
-function showTop() {
-    const users = Object.entries(database.users)
-        .sort((a, b) => b[1].coins - a[1].coins)
-        .slice(0, 5);
-
-    if (!users.length) return '🏆 Пока нет участников рейтинга.';
-
-    const result = users.map((entry, index) =>
-        `${index + 1}. ${entry[0]} — ${entry[1].coins} монет`
-    );
-
-    return `🏆 ТОП зрителей: ${result.join(' | ')}`;
-}
-
-function showFisherTop() {
-    const users = Object.entries(database.users)
-        .sort((a, b) => b[1].fishCaught - a[1].fishCaught)
-        .slice(0, 5);
-
-    if (!users.length) return '🎣 Пока никто не рыбачил.';
-
-    const result = users.map((entry, index) =>
-        `${index + 1}. ${entry[0]} — ${entry[1].fishCaught} рыб`
-    );
-
-    return `🎣 ТОП рыбаков: ${result.join(' | ')}`;
-}
-
-// ==========================================
-// ВАЛЮТЫ
-// ==========================================
-
-const currencyDict = {
-    доллар: 'USD',
-    долларов: 'USD',
-    доллара: 'USD',
-    usd: 'USD',
-    евро: 'EUR',
-    eur: 'EUR',
-    фунт: 'GBP',
-    gbp: 'GBP',
-    юань: 'CNY',
-    cny: 'CNY',
-    йена: 'JPY',
-    иена: 'JPY',
-    jpy: 'JPY',
-    лира: 'TRY',
-    try: 'TRY',
-    рубль: 'RUB',
-    рублей: 'RUB',
-    руб: 'RUB',
-    rub: 'RUB',
-    тенге: 'KZT',
-    kzt: 'KZT',
-    гривна: 'UAH',
-    uah: 'UAH',
-    дирхам: 'AED',
-    aed: 'AED',
-    рупия: 'INR',
-    inr: 'INR'
-};
-
-let currencyCache = null;
-let currencyCacheTime = 0;
-
-function normalizeCurrency(value) {
-    if (!value) return null;
-
-    const key = value.toLowerCase().trim();
-
-    return currencyDict[key] ||
-        (/^[a-z]{3}$/i.test(key) ? key.toUpperCase() : null);
-}
-
-async function getCurrencyRates() {
-    if (
-        currencyCache &&
-        Date.now() - currencyCacheTime < 600000
-    ) {
-        return currencyCache;
-    }
-
-    const response = await axios.get(
-        'https://www.cbr-xml-daily.ru/daily_json.js',
-        { timeout: 10000 }
-    );
-
-    currencyCache = response.data;
-    currencyCacheTime = Date.now();
-
-    return currencyCache;
-}
-
-// ==========================================
-// ПОГОДА
-// ==========================================
-
-const weatherCache = new Map();
-
-async function getWeather(city) {
-    const key = city.toLowerCase();
-    const cached = weatherCache.get(key);
-
-    if (cached && Date.now() - cached.time < 600000) {
-        return cached.data;
-    }
-
-    const response = await axios.get(
-        `https://wttr.in/${encodeURIComponent(city)}`,
-        {
-            params: { format: 'j1', lang: 'ru' },
-            timeout: 12000
-        }
-    );
-
-    const current = response.data.current_condition[0];
-
-    const result = {
-        temperature: current.temp_C,
-        feelsLike: current.FeelsLikeC,
-        description:
-            current.lang_ru?.[0]?.value ||
-            current.weatherDesc?.[0]?.value ||
-            'Нет описания',
-        humidity: current.humidity,
-        wind: current.windspeedKmph
-    };
-
-    weatherCache.set(key, {
-        data: result,
-        time: Date.now()
-    });
-
-    return result;
-}
-
-// ==========================================
-// ВРЕМЯ И ЧАСОВЫЕ ПОЯСА
-// ==========================================
-
-const timeZones = {
-    'москва': 'Europe/Moscow',
-    'санкт-петербург': 'Europe/Moscow',
-    'питер': 'Europe/Moscow',
-    'казань': 'Europe/Moscow',
-    'набережные челны': 'Europe/Moscow',
-    'челны': 'Europe/Moscow',
-    'нижний новгород': 'Europe/Moscow',
-    'воронеж': 'Europe/Moscow',
-    'ростов-на-дону': 'Europe/Moscow',
-    'краснодар': 'Europe/Moscow',
-    'сочи': 'Europe/Moscow',
-    'уфа': 'Asia/Yekaterinburg',
-    'екатеринбург': 'Asia/Yekaterinburg',
-    'челябинск': 'Asia/Yekaterinburg',
-    'пермь': 'Asia/Yekaterinburg',
-    'ижевск': 'Europe/Samara',
-    'самара': 'Europe/Samara',
-    'саратов': 'Europe/Saratov',
-    'астрахань': 'Europe/Astrakhan',
-    'омск': 'Asia/Omsk',
-    'новосибирск': 'Asia/Novosibirsk',
-    'томск': 'Asia/Tomsk',
-    'красноярск': 'Asia/Krasnoyarsk',
-    'иркутск': 'Asia/Irkutsk',
-    'улан-удэ': 'Asia/Irkutsk',
-    'чита': 'Asia/Chita',
-    'якутск': 'Asia/Yakutsk',
-    'владивосток': 'Asia/Vladivostok',
-    'хабаровск': 'Asia/Vladivostok',
-    'магадан': 'Asia/Magadan',
-    'калининград': 'Europe/Kaliningrad',
-    'лондон': 'Europe/London',
-    'дублин': 'Europe/Dublin',
-    'берлин': 'Europe/Berlin',
-    'париж': 'Europe/Paris',
-    'рим': 'Europe/Rome',
-    'мадрид': 'Europe/Madrid',
-    'варшава': 'Europe/Warsaw',
-    'прага': 'Europe/Prague',
-    'стамбул': 'Europe/Istanbul',
-    'нью-йорк': 'America/New_York',
-    'вашингтон': 'America/New_York',
-    'торонто': 'America/Toronto',
-    'чикаго': 'America/Chicago',
-    'лос-анджелес': 'America/Los_Angeles',
-    'токио': 'Asia/Tokyo',
-    'осака': 'Asia/Tokyo',
-    'пекин': 'Asia/Shanghai',
-    'шанхай': 'Asia/Shanghai',
-    'сеул': 'Asia/Seoul',
-    'сингапур': 'Asia/Singapore',
-    'бангкок': 'Asia/Bangkok',
-    'дели': 'Asia/Kolkata',
-    'дубай': 'Asia/Dubai',
-    'ташкент': 'Asia/Tashkent',
-    'алматы': 'Asia/Almaty',
-    'тбилиси': 'Asia/Tbilisi',
-    'ереван': 'Asia/Yerevan',
-    'баку': 'Asia/Baku',
-    'сидней': 'Australia/Sydney',
-    'мельбурн': 'Australia/Melbourne',
-    'перт': 'Australia/Perth',
-    'окленд': 'Pacific/Auckland'
-};
-
-function isValidTimeZone(zone) {
-    try {
-        new Intl.DateTimeFormat('ru-RU', { timeZone: zone });
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-function formatTime(city, zone) {
-    const now = new Date();
-
-    const time = new Intl.DateTimeFormat('ru-RU', {
-        timeZone: zone,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-    }).format(now);
-
-    const date = new Intl.DateTimeFormat('ru-RU', {
-        timeZone: zone,
-        dateStyle: 'long'
-    }).format(now);
-
-    const offset = new Intl.DateTimeFormat('en-US', {
-        timeZone: zone,
-        timeZoneName: 'longOffset'
-    }).formatToParts(now)
-        .find(part => part.type === 'timeZoneName')?.value || '';
-
-    return `🕐 ${city}: ${time} | ${date} | ${offset} | ${zone}`;
-}
-
-async function getTime(city) {
-    const key = city.toLowerCase().trim();
-
-    if (isValidTimeZone(city)) {
-        return formatTime(city, city);
-    }
-
-    if (timeZones[key]) {
-        return formatTime(city, timeZones[key]);
-    }
-
-    const response = await axios.get(
-        'https://geocoding-api.open-meteo.com/v1/search',
-        {
-            params: {
-                name: city,
-                count: 10,
-                language: 'ru',
-                format: 'json'
-            },
-            timeout: 10000
-        }
-    );
-
-    const place = response.data.results?.find(item => item.timezone);
-
-    if (!place) throw new Error('Город не найден');
-
-    return formatTime(place.name, place.timezone);
-}
-
-// ==========================================
-// ПЕРЕВОДЧИК
-// ==========================================
-
-const languageAliases = {
-    'русский': 'ru',
-    'английский': 'en',
-    'немецкий': 'de',
-    'французский': 'fr',
-    'испанский': 'es',
-    'итальянский': 'it',
-    'португальский': 'pt',
-    'японский': 'ja',
-    'китайский': 'zh-CN',
-    'корейский': 'ko',
-    'турецкий': 'tr',
-    'польский': 'pl',
-    'украинский': 'uk',
-    'белорусский': 'be',
-    'казахский': 'kk',
-    'узбекский': 'uz',
-    'арабский': 'ar',
-    'хинди': 'hi',
-    'нидерландский': 'nl',
-    'голландский': 'nl',
-    'шведский': 'sv',
-    'норвежский': 'no',
-    'финский': 'fi',
-    'чешский': 'cs',
-    'греческий': 'el',
-    'румынский': 'ro',
-    'венгерский': 'hu',
-    'тайский': 'th',
-    'вьетнамский': 'vi',
-    'иврит': 'he',
-    'персидский': 'fa',
-    'индонезийский': 'id',
-    'малайский': 'ms',
-    'сербский': 'sr',
-    'болгарский': 'bg',
-    'датский': 'da',
-    'латинский': 'la'
-};
-
-const translationCache = new Map();
-
-function normalizeLanguage(language) {
-    const key = language.toLowerCase().trim();
-
-    return languageAliases[key] || key;
-}
-
-async function translateText(text, from, to) {
-    const cacheKey = `${from}|${to}|${text.toLowerCase()}`;
-
-    if (translationCache.has(cacheKey)) {
-        return translationCache.get(cacheKey);
-    }
-
-    const response = await axios.get(
-        'https://api.mymemory.translated.net/get',
-        {
-            params: {
-                q: text,
-                langpair: `${from}|${to}`
-            },
-            timeout: 15000
-        }
-    );
-
-    if (response.data.responseStatus !== 200) {
-        throw new Error(
-            response.data.responseDetails || 'Ошибка перевода'
-        );
-    }
-
-    const translated =
-        response.data.responseData?.translatedText;
-
-    if (!translated) {
-        throw new Error('Перевод не найден');
-    }
-
-    translationCache.set(cacheKey, translated);
-
-    return translated;
-}
-
-// ==========================================
-// ИГНОРИРУЕМЫЕ ПОЛЬЗОВАТЕЛИ
-// ==========================================
-
 const ignoredUsers = [
-    BOT_USERNAME,
+    'cgamer_bot',
     'nightbot',
     'streamelements',
     'moobot',
@@ -672,9 +36,512 @@ const ignoredUsers = [
     'jeetbot'
 ];
 
-// ==========================================
-// ОБРАБОТКА КОМАНД
-// ==========================================
+// ==================================================
+// HTTP СЕРВЕР RENDER
+// ==================================================
+
+http.createServer((req, res) => {
+    res.writeHead(200, {
+        'Content-Type': 'text/plain; charset=utf-8'
+    });
+
+    res.end('Twitch bot is running!');
+}).listen(PORT, '0.0.0.0', () => {
+    console.log(`HTTP сервер запущен на порту ${PORT}`);
+});
+
+// ==================================================
+// БАЗА ИГРОВЫХ ПРОФИЛЕЙ
+// ==================================================
+
+let profiles = {};
+
+function loadProfiles() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            profiles = JSON.parse(
+                fs.readFileSync(DATA_FILE, 'utf8')
+            );
+        }
+    } catch (error) {
+        console.log('Ошибка загрузки профилей:', error.message);
+        profiles = {};
+    }
+}
+
+function saveProfiles() {
+    try {
+        fs.writeFileSync(
+            DATA_FILE,
+            JSON.stringify(profiles, null, 2)
+        );
+    } catch (error) {
+        console.log('Ошибка сохранения профилей:', error.message);
+    }
+}
+
+function getProfile(username) {
+    username = username.toLowerCase();
+
+    if (!profiles[username]) {
+        profiles[username] = {
+            coins: 100,
+            xp: 0,
+            level: 1,
+            fish: 0,
+            rareFish: 0,
+            rod: 'обычная',
+            lastDaily: '',
+            lastFish: 0
+        };
+
+        saveProfiles();
+    }
+
+    return profiles[username];
+}
+
+function addXP(username, amount) {
+    const profile = getProfile(username);
+
+    profile.xp += amount;
+
+    while (profile.xp >= profile.level * 100) {
+        profile.xp -= profile.level * 100;
+        profile.level++;
+        profile.coins += 50;
+
+        client.say(
+            `#${CHANNEL}`,
+            `🎉 @${username}, новый уровень: ${profile.level}! Бонус: 50 монет!`
+        );
+    }
+
+    saveProfiles();
+}
+
+// ==================================================
+// АВТОПЕРЕВОД ИНОСТРАННЫХ СООБЩЕНИЙ НА РУССКИЙ
+// ==================================================
+
+const autoTranslateCooldown = new Map();
+
+const AUTO_TRANSLATE_COOLDOWN = 8000;
+
+async function autoTranslateToRussian(message) {
+    const response = await axios.get(
+        'https://translate.googleapis.com/translate_a/single',
+        {
+            params: {
+                client: 'gtx',
+                sl: 'auto',
+                tl: 'ru',
+                dt: 't',
+                q: message
+            },
+            timeout: 10000
+        }
+    );
+
+    const data = response.data;
+
+    if (!Array.isArray(data) || !Array.isArray(data[0])) {
+        throw new Error('Некорректный ответ переводчика');
+    }
+
+    const translated = data[0]
+        .map(part => part[0] || '')
+        .join('');
+
+    const detectedLanguage = data[2];
+
+    if (!translated.trim()) {
+        return null;
+    }
+
+    // Не переводим русский язык
+    if (detectedLanguage === 'ru') {
+        return null;
+    }
+
+    return translated;
+}
+
+// ==================================================
+// ЯЗЫКИ ДЛЯ РУЧНОГО ПЕРЕВОДА
+// ==================================================
+
+const languages = {
+    'английский': 'en',
+    'английском': 'en',
+    'немецкий': 'de',
+    'немецком': 'de',
+    'французский': 'fr',
+    'французском': 'fr',
+    'испанский': 'es',
+    'испанском': 'es',
+    'итальянский': 'it',
+    'итальянском': 'it',
+    'польский': 'pl',
+    'польском': 'pl',
+    'китайский': 'zh-CN',
+    'китайском': 'zh-CN',
+    'японский': 'ja',
+    'японском': 'ja',
+    'корейский': 'ko',
+    'корейском': 'ko',
+    'турецкий': 'tr',
+    'турецком': 'tr',
+    'украинский': 'uk',
+    'украинском': 'uk',
+    'белорусский': 'be',
+    'белорусском': 'be',
+    'казахский': 'kk',
+    'казахском': 'kk',
+    'португальский': 'pt',
+    'португальском': 'pt',
+    'арабский': 'ar',
+    'арабском': 'ar',
+    'чешский': 'cs',
+    'чешском': 'cs',
+    'нидерландский': 'nl',
+    'нидерландском': 'nl',
+    'шведский': 'sv',
+    'шведском': 'sv',
+    'греческий': 'el',
+    'греческом': 'el',
+    'хинди': 'hi',
+    'вьетнамский': 'vi',
+    'вьетнамском': 'vi',
+    'румынский': 'ro',
+    'румынском': 'ro',
+    'финский': 'fi',
+    'финском': 'fi',
+    'норвежский': 'no',
+    'норвежском': 'no',
+    'русский': 'ru',
+    'русском': 'ru'
+};
+
+async function translateText(text, from, to) {
+    const response = await axios.get(
+        'https://translate.googleapis.com/translate_a/single',
+        {
+            params: {
+                client: 'gtx',
+                sl: from,
+                tl: to,
+                dt: 't',
+                q: text
+            },
+            timeout: 10000
+        }
+    );
+
+    if (!Array.isArray(response.data) ||
+        !Array.isArray(response.data[0])) {
+        throw new Error('Не удалось получить перевод');
+    }
+
+    return response.data[0]
+        .map(part => part[0] || '')
+        .join('');
+}
+
+// ==================================================
+// КУРСЫ ВАЛЮТ
+// ==================================================
+
+const currencyDict = {
+    'доллар': 'USD',
+    'доллара': 'USD',
+    'долларов': 'USD',
+    'usd': 'USD',
+    'евро': 'EUR',
+    'eur': 'EUR',
+    'фунт': 'GBP',
+    'фунта': 'GBP',
+    'фунтов': 'GBP',
+    'gbp': 'GBP',
+    'юань': 'CNY',
+    'юаня': 'CNY',
+    'cny': 'CNY',
+    'лира': 'TRY',
+    'лиры': 'TRY',
+    'try': 'TRY',
+    'тенге': 'KZT',
+    'kzt': 'KZT',
+    'дирхам': 'AED',
+    'aed': 'AED',
+    'йена': 'JPY',
+    'иена': 'JPY',
+    'jpy': 'JPY',
+    'франк': 'CHF',
+    'chf': 'CHF'
+};
+
+async function getCurrencyRate(currency) {
+    const response = await axios.get(
+        'https://www.cbr-xml-daily.ru/daily_json.js',
+        { timeout: 10000 }
+    );
+
+    const data = response.data;
+    const item = data.Valute[currency];
+
+    if (!item) {
+        throw new Error('Валюта не найдена в списке ЦБ РФ');
+    }
+
+    return {
+        value: item.Value,
+        nominal: item.Nominal,
+        name: item.Name
+    };
+}
+
+// ==================================================
+// ПОГОДА
+// ==================================================
+
+async function getWeather(city) {
+    const geo = await axios.get(
+        'https://geocoding-api.open-meteo.com/v1/search',
+        {
+            params: {
+                name: city,
+                count: 1,
+                language: 'ru',
+                format: 'json'
+            },
+            timeout: 10000
+        }
+    );
+
+    if (!geo.data.results || !geo.data.results.length) {
+        throw new Error('Город не найден');
+    }
+
+    const place = geo.data.results[0];
+
+    const weather = await axios.get(
+        'https://api.open-meteo.com/v1/forecast',
+        {
+            params: {
+                latitude: place.latitude,
+                longitude: place.longitude,
+                current: 'temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m',
+                timezone: 'auto'
+            },
+            timeout: 10000
+        }
+    );
+
+    const current = weather.data.current;
+
+    return {
+        city: place.name,
+        country: place.country,
+        temperature: current.temperature_2m,
+        feels: current.apparent_temperature,
+        humidity: current.relative_humidity_2m,
+        wind: current.wind_speed_10m
+    };
+}
+
+// ==================================================
+// ВРЕМЯ В ГОРОДАХ
+// ==================================================
+
+async function getCityTime(city) {
+    const geo = await axios.get(
+        'https://geocoding-api.open-meteo.com/v1/search',
+        {
+            params: {
+                name: city,
+                count: 1,
+                language: 'ru',
+                format: 'json'
+            },
+            timeout: 10000
+        }
+    );
+
+    if (!geo.data.results || !geo.data.results.length) {
+        throw new Error('Город не найден');
+    }
+
+    const place = geo.data.results[0];
+
+    if (!place.timezone) {
+        throw new Error('Не удалось определить часовой пояс');
+    }
+
+    const time = new Intl.DateTimeFormat('ru-RU', {
+        timeZone: place.timezone,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    }).format(new Date());
+
+    return {
+        city: place.name,
+        country: place.country,
+        time,
+        timezone: place.timezone
+    };
+}
+
+// ==================================================
+// РЫБАЛКА
+// ==================================================
+
+const fishList = [
+    { name: 'Карась', price: 10, rare: false },
+    { name: 'Окунь', price: 15, rare: false },
+    { name: 'Плотва', price: 12, rare: false },
+    { name: 'Щука', price: 30, rare: false },
+    { name: 'Сом', price: 50, rare: false },
+    { name: 'Золотая рыбка', price: 150, rare: true },
+    { name: 'Мифическая рыба', price: 500, rare: true },
+    { name: 'Легендарный дракон', price: 1000, rare: true }
+];
+
+const rods = {
+    'обычная': {
+        price: 0,
+        rareChance: 0.05
+    },
+    'улучшенная': {
+        price: 500,
+        rareChance: 0.15
+    },
+    'золотая': {
+        price: 1500,
+        rareChance: 0.30
+    }
+};
+
+async function fishing(username) {
+    const profile = getProfile(username);
+    const now = Date.now();
+
+    if (now - profile.lastFish < 30000) {
+        const seconds = Math.ceil(
+            (30000 - (now - profile.lastFish)) / 1000
+        );
+
+        return `⏳ @${username}, подожди ${seconds} сек.`;
+    }
+
+    profile.lastFish = now;
+
+    const rod = rods[profile.rod] || rods['обычная'];
+
+    if (Math.random() < rod.rareChance) {
+        const rareFish = fishList.filter(fish => fish.rare);
+
+        const fish = rareFish[
+            Math.floor(Math.random() * rareFish.length)
+        ];
+
+        profile.fish++;
+        profile.rareFish++;
+        profile.coins += fish.price;
+
+        addXP(username, 30);
+        saveProfiles();
+
+        return `🌟 @${username} поймал редкую рыбу: ${fish.name}! +${fish.price} монет!`;
+    }
+
+    if (Math.random() < 0.20) {
+        addXP(username, 5);
+        saveProfiles();
+
+        return `🐟 @${username}, рыба сорвалась с крючка! +5 XP`;
+    }
+
+    const normalFish = fishList.filter(fish => !fish.rare);
+
+    const fish = normalFish[
+        Math.floor(Math.random() * normalFish.length)
+    ];
+
+    profile.fish++;
+    profile.coins += fish.price;
+
+    addXP(username, 15);
+    saveProfiles();
+
+    return `🎣 @${username} поймал ${fish.name}! +${fish.price} монет!`;
+}
+
+// ==================================================
+// ЕЖЕДНЕВНАЯ НАГРАДА
+// ==================================================
+
+function dailyReward(username) {
+    const profile = getProfile(username);
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (profile.lastDaily === today) {
+        return `⏳ @${username}, ежедневную награду ты уже получил сегодня.`;
+    }
+
+    profile.lastDaily = today;
+    profile.coins += 200;
+
+    addXP(username, 25);
+    saveProfiles();
+
+    return `🎁 @${username}, ты получил 200 монет и 25 XP!`;
+}
+
+// ==================================================
+// МАГАЗИН
+// ==================================================
+
+function showShop() {
+    return '🛒 Магазин: обычная удочка — бесплатно | улучшенная — 500 монет | золотая — 1500 монет. Покупка: !купить улучшенная или !купить золотая';
+}
+
+function buyRod(username, rodName) {
+    const profile = getProfile(username);
+
+    if (!rods[rodName]) {
+        return '❌ Такой удочки нет. Доступно: улучшенная, золотая.';
+    }
+
+    if (rodName === 'обычная') {
+        return 'У тебя уже есть обычная удочка.';
+    }
+
+    if (profile.rod === 'золотая') {
+        return 'У тебя уже есть золотая удочка!';
+    }
+
+    if (profile.rod === 'улучшенная' && rodName === 'улучшенная') {
+        return 'У тебя уже есть улучшенная удочка.';
+    }
+
+    const price = rods[rodName].price;
+
+    if (profile.coins < price) {
+        return `❌ Недостаточно монет. Нужно ${price}, у тебя ${profile.coins}.`;
+    }
+
+    profile.coins -= price;
+    profile.rod = rodName;
+
+    saveProfiles();
+
+    return `✅ @${username}, ты купил удочку "${rodName}"!`;
+}
+
+// ==================================================
+// ОБРАБОТКА СООБЩЕНИЙ TWITCH
+// ==================================================
 
 client.on('message', async (channel, tags, message, self) => {
     if (self) return;
@@ -683,244 +550,324 @@ client.on('message', async (channel, tags, message, self) => {
 
     if (!username || ignoredUsers.includes(username)) return;
 
-    const text = message.trim();
+    const trimmedMessage = message.trim();
 
-    if (!text.startsWith('!')) return;
+    if (!trimmedMessage) return;
 
-    console.log(`Команда от ${username}: ${text}`);
+    // Команды
+    const args = trimmedMessage.split(/\s+/);
+    const command = args[0].toLowerCase();
+    const text = args.slice(1).join(' ');
 
-    const parts = text.split(/\s+/);
-    const command = parts[0].toLowerCase();
+    // ==================================================
+    // АВТОПЕРЕВОД
+    // ==================================================
+
+    if (
+        !trimmedMessage.startsWith('!') &&
+        !trimmedMessage.startsWith('/') &&
+        trimmedMessage.length >= 3 &&
+        !/^https?:\/\//i.test(trimmedMessage)
+    ) {
+        const now = Date.now();
+        const lastTranslation =
+            autoTranslateCooldown.get(username) || 0;
+
+        if (now - lastTranslation >= AUTO_TRANSLATE_COOLDOWN) {
+            autoTranslateCooldown.set(username, now);
+
+            try {
+                const translated =
+                    await autoTranslateToRussian(trimmedMessage);
+
+                if (translated && translated.trim()) {
+                    client.say(
+                        channel,
+                        `🌐 ${username}: ${translated.slice(0, 350)}`
+                    );
+                }
+            } catch (error) {
+                console.log(
+                    'Ошибка автоперевода:',
+                    error.message
+                );
+            }
+        }
+    }
+
+    // ==================================================
+    // КОМАНДЫ
+    // ==================================================
 
     try {
 
         // ПОМОЩЬ
-
-        if (['!помощь', '!help'].includes(command)) {
-            client.say(channel,
-                '📋 !профиль | !баланс | !топ | !топрыбаки | !магазин | !купить удочка | !ежедневно | !рыбалка | !время город | !погода город | !курс доллар | !деньги 100 доллар | !перевод текст | !на en текст'
+        if (command === '!помощь' || command === '!help') {
+            client.say(
+                channel,
+                '📌 !профиль !баланс !рыбалка !ежедневно !магазин !купить !топ !топрыбаки !погода город !время город !курс валюта !перевод текст !на язык текст'
             );
         }
 
         // ПРОФИЛЬ
-
         else if (command === '!профиль') {
-            client.say(channel, showProfile(username));
+            const p = getProfile(username);
+
+            client.say(
+                channel,
+                `👤 @${username} | Уровень: ${p.level} | XP: ${p.xp}/${p.level * 100} | Монеты: ${p.coins} | Рыбы: ${p.fish} | Редкой рыбы: ${p.rareFish} | Удочка: ${p.rod}`
+            );
         }
 
         // БАЛАНС
+        else if (
+            command === '!баланс' ||
+            command === '!деньги'
+        ) {
+            const p = getProfile(username);
 
-        else if (command === '!баланс') {
-            client.say(channel, showBalance(username));
+            client.say(
+                channel,
+                `💰 @${username}, твой баланс: ${p.coins} монет.`
+            );
         }
 
-        // ТОП
-
-        else if (command === '!топ') {
-            client.say(channel, showTop());
+        // РЫБАЛКА
+        else if (
+            command === '!рыбалка' ||
+            command === '!рыба' ||
+            command === '!fish'
+        ) {
+            const result = await fishing(username);
+            client.say(channel, result);
         }
 
-        // ТОП РЫБАКОВ
-
-        else if (command === '!топрыбаки') {
-            client.say(channel, showFisherTop());
+        // ЕЖЕДНЕВНО
+        else if (command === '!ежедневно') {
+            client.say(channel, dailyReward(username));
         }
 
         // МАГАЗИН
-
         else if (command === '!магазин') {
             client.say(channel, showShop());
         }
 
         // ПОКУПКА
-
         else if (command === '!купить') {
-            const item = parts.slice(1).join(' ');
-            client.say(channel, buyItem(username, item));
+            const rodName = args
+                .slice(1)
+                .join(' ')
+                .toLowerCase();
+
+            client.say(
+                channel,
+                buyRod(username, rodName)
+            );
         }
 
-        // ЕЖЕДНЕВНАЯ НАГРАДА
-
-        else if (command === '!ежедневно') {
-            client.say(channel, dailyReward(username));
-        }
-
-        // РЫБАЛКА
-
-        else if (['!рыбалка', '!рыба', '!fish'].includes(command)) {
-            client.say(channel, fishing(username));
-        }
-
-        // ВРЕМЯ
-
-        else if (['!время', '!time'].includes(command)) {
-            const city = parts.slice(1).join(' ');
-
-            if (!city) {
-                return client.say(channel,
-                    '🕐 Пример: !время Казань или !время Europe/Moscow'
+        // ТОП ИГРОКОВ
+        else if (command === '!топ') {
+            const top = Object.entries(profiles)
+                .sort((a, b) => b[1].coins - a[1].coins)
+                .slice(0, 5)
+                .map((entry, index) =>
+                    `${index + 1}. ${entry[0]} — ${entry[1].coins} монет`
                 );
-            }
 
-            client.say(channel, await getTime(city));
+            client.say(
+                channel,
+                top.length
+                    ? `🏆 Топ игроков: ${top.join(' | ')}`
+                    : 'Пока нет игроков.'
+            );
+        }
+
+        // ТОП РЫБАКОВ
+        else if (command === '!топрыбаки') {
+            const top = Object.entries(profiles)
+                .sort((a, b) => b[1].fish - a[1].fish)
+                .slice(0, 5)
+                .map((entry, index) =>
+                    `${index + 1}. ${entry[0]} — ${entry[1].fish} рыб`
+                );
+
+            client.say(
+                channel,
+                top.length
+                    ? `🎣 Топ рыбаков: ${top.join(' | ')}`
+                    : 'Пока нет рыбаков.'
+            );
         }
 
         // ПОГОДА
-
-        else if (['!погода', '!weather'].includes(command)) {
-            const city = parts.slice(1).join(' ');
-
-            if (!city) {
-                return client.say(channel,
-                    '🌤️ Пример: !погода Казань'
+        else if (
+            command === '!погода' ||
+            command === '!weather'
+        ) {
+            if (!text) {
+                client.say(
+                    channel,
+                    'Напиши город: !погода Москва'
                 );
+                return;
             }
 
-            const weather = await getWeather(city);
+            const w = await getWeather(text);
 
-            client.say(channel,
-                `🌤️ ${city}: ${weather.temperature}°C, ощущается ${weather.feelsLike}°C. ${weather.description}. Влажность ${weather.humidity}%, ветер ${weather.wind} км/ч.`
+            client.say(
+                channel,
+                `🌤 ${w.city}, ${w.country}: ${w.temperature}°C, ощущается ${w.feels}°C, влажность ${w.humidity}%, ветер ${w.wind} км/ч.`
+            );
+        }
+
+        // ВРЕМЯ
+        else if (
+            command === '!время' ||
+            command === '!time'
+        ) {
+            if (!text) {
+                client.say(
+                    channel,
+                    'Напиши город: !время Токио'
+                );
+                return;
+            }
+
+            const t = await getCityTime(text);
+
+            client.say(
+                channel,
+                `🕒 ${t.city}, ${t.country}: ${t.time} (${t.timezone})`
             );
         }
 
         // КУРС ВАЛЮТ
-
-        else if (['!курс', '!rate'].includes(command)) {
-            const currency = normalizeCurrency(parts[1] || 'USD');
-
-            if (!currency) {
-                return client.say(channel, '💱 Пример: !курс доллар');
-            }
-
-            const data = await getCurrencyRates();
-
-            if (currency === 'RUB') {
-                return client.say(channel,
-                    '💱 Российский рубль — базовая валюта ЦБ РФ.'
+        else if (
+            command === '!курс' ||
+            command === '!rate'
+        ) {
+            if (!text) {
+                client.say(
+                    channel,
+                    'Напиши валюту: !курс доллар'
                 );
+                return;
             }
 
-            const item = data.Valute[currency];
+            const currency =
+                currencyDict[text.toLowerCase()] ||
+                text.toUpperCase();
 
-            if (!item) {
-                return client.say(channel,
-                    `❌ Валюта ${currency} не найдена.`
-                );
-            }
+            const rate = await getCurrencyRate(currency);
+            const value = rate.value / rate.nominal;
 
-            client.say(channel,
-                `💱 ${item.Name}: ${(item.Value / item.Nominal).toFixed(2)} RUB.`
+            client.say(
+                channel,
+                `💱 ${rate.name}: ${value.toFixed(2)} RUB за 1 единицу.`
             );
         }
 
-        // КОНВЕРТЕР
-
-        else if (['!деньги', '!money'].includes(command)) {
-            const amount = Number(parts[1]);
-            const currency = normalizeCurrency(parts[2]);
-
-            if (!Number.isFinite(amount) || amount <= 0 || !currency) {
-                return client.say(channel,
-                    '💰 Пример: !деньги 100 доллар'
+        // РУЧНОЙ ПЕРЕВОД НА РУССКИЙ
+        else if (
+            command === '!перевод' ||
+            command === '!translate'
+        ) {
+            if (!text) {
+                client.say(
+                    channel,
+                    'Используй: !перевод Hello'
                 );
-            }
-
-            const data = await getCurrencyRates();
-
-            if (currency === 'RUB') {
-                return client.say(channel,
-                    `💰 ${amount} RUB = ${amount} RUB.`
-                );
-            }
-
-            const item = data.Valute[currency];
-
-            if (!item) {
-                return client.say(channel,
-                    `❌ Валюта ${currency} не найдена.`
-                );
-            }
-
-            const result = amount * item.Value / item.Nominal;
-
-            client.say(channel,
-                `💰 ${amount} ${currency} = ${result.toFixed(2)} RUB.`
-            );
-        }
-
-        // ПЕРЕВОД НА РУССКИЙ
-        // !перевод Hello
-        // !перевод en ru Hello
-
-        else if (['!перевод', '!translate'].includes(command)) {
-            let from = 'autodetect';
-            let to = 'ru';
-            let originalText;
-
-            if (
-                parts.length >= 4 &&
-                /^[a-z]{2,5}$/i.test(parts[1]) &&
-                /^[a-z-]{2,8}$/i.test(parts[2])
-            ) {
-                from = normalizeLanguage(parts[1]);
-                to = normalizeLanguage(parts[2]);
-                originalText = parts.slice(3).join(' ');
-            } else {
-                originalText = parts.slice(1).join(' ');
-            }
-
-            if (!originalText) {
-                return client.say(channel,
-                    '🌍 Пример: !перевод Hello — перевод на русский.'
-                );
+                return;
             }
 
             const translated = await translateText(
-                originalText,
-                from,
-                to
+                text,
+                'auto',
+                'ru'
             );
 
-            client.say(channel,
-                `🌍 Перевод на ${to === 'ru' ? 'русский' : to}: ${translated}`.slice(0, 450)
+            client.say(
+                channel,
+                `🌐 @${username}: ${translated.slice(0, 350)}`
             );
         }
 
-        // С РУССКОГО НА ЛЮБОЙ ЯЗЫК
-        // !на en Привет
-        // !на немецкий Привет
+        // ПЕРЕВОД С РУССКОГО НА ДРУГОЙ ЯЗЫК
+        else if (command === '!на') {
+            const targetName = args[1]?.toLowerCase();
+            const translationText = args
+                .slice(2)
+                .join(' ');
 
-        else if (['!на', '!to'].includes(command)) {
-            const target = parts[1];
-
-            const originalText = parts.slice(2).join(' ');
-
-            if (!target || !originalText) {
-                return client.say(channel,
-                    '🌍 Пример: !на en Привет или !на японский Привет'
+            if (!targetName || !translationText) {
+                client.say(
+                    channel,
+                    'Используй: !на английский Привет или !на en Привет'
                 );
+                return;
             }
 
-            const to = normalizeLanguage(target);
+            const targetLanguage =
+                languages[targetName] || targetName;
+
+            if (!/^[a-z]{2,3}(-[A-Z]{2})?$/i.test(targetLanguage)) {
+                client.say(
+                    channel,
+                    '❌ Неизвестный код языка.'
+                );
+                return;
+            }
 
             const translated = await translateText(
-                originalText,
+                translationText,
                 'ru',
-                to
+                targetLanguage
             );
 
-            client.say(channel,
-                `🌍 Перевод на ${target}: ${translated}`.slice(0, 450)
+            client.say(
+                channel,
+                `🌐 @${username}: ${translated.slice(0, 350)}`
             );
         }
 
     } catch (error) {
-        console.error(`Ошибка ${command}:`, error.message);
+        console.log(
+            'Ошибка команды:',
+            command,
+            error.message
+        );
 
-        client.say(channel,
-            '⚠️ Ошибка выполнения команды. Попробуй позже.'
+        client.say(
+            channel,
+            `❌ @${username}, не удалось выполнить команду. Попробуй позже.`
         );
     }
 });
 
-console.log('Бот запускается...');
+// ==================================================
+// ЗАПУСК БОТА
+// ==================================================
+
+loadProfiles();
+
+client.connect().catch(error => {
+    console.error(
+        'Ошибка подключения к Twitch:',
+        error
+    );
+});
+
+client.on('connected', (address, port) => {
+    console.log(`Подключено к Twitch: ${address}:${port}`);
+    console.log('TWITCH BOT ПОДКЛЮЧЁН!');
+    console.log(`Канал: ${CHANNEL}`);
+    console.log('Автоперевод включён');
+    console.log('Игровые профили включены');
+    console.log('Погода включена');
+    console.log('Валюты включены');
+    console.log('Время включено');
+});
+
+client.on('disconnected', reason => {
+    console.log('Отключение от Twitch:', reason);
+});
