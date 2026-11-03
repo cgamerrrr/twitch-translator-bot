@@ -116,10 +116,9 @@ async function onMessageHandler(channel, tags, msg, self) {
     let opt = { hour: '2-digit', minute: '2-digit', hour12: false };
     if (!city) return client.say(channel, `🕒 Местное время: ${new Date().toLocaleTimeString('ru-RU', opt)}`);
     try {
-      // ИСПРАВЛЕНО: Добавлена точная косая черта перед 'en'
-      const trans = await axios.get('https://lingva.ml' + encodeURIComponent(city));
-      if (trans.data && trans.data.translation) {
-        let en = trans.data.translation.trim().replace(/\s+/g, '_');
+      const res = await axios.get('https://translated.net', { params: { q: city, langpair: 'ru|en' }, timeout: 4000 });
+      if (res.data && res.data.responseData && res.data.responseData.translatedText) {
+        let en = res.data.responseData.translatedText.trim().replace(/\s+/g, '_');
         let regions = ['Europe', 'Asia', 'America', 'Australia', 'Africa'];
         let tz = null;
         for (let r of regions) {
@@ -140,16 +139,15 @@ async function onMessageHandler(channel, tags, msg, self) {
     let text = words.slice(2).join(' '); 
     if (!lang || !text) return;
     try {
-      // ИСПРАВЛЕНО: Добавлена точная косая черта перед переменной lang
-      const res = await axios.get('https://lingva.ml' + lang + '/' + encodeURIComponent(text));
-      if (res.data && res.data.translation) {
-        client.say(channel, `🌐 [${lang.toUpperCase()}] ${authorName}: ${res.data.translation.trim()}`);
+      const res = await axios.get('https://translated.net', { params: { q: text, langpair: 'ru|' + lang }, timeout: 4000 });
+      if (res.data && res.data.responseData && res.data.responseData.translatedText) {
+        client.say(channel, `🌐 [${lang.toUpperCase()}] ${authorName}: ${res.data.responseData.translatedText.trim()}`);
       }
     } catch (e) {}
     return;
   }
 
-  // --- БЛОК 2: АВТОПЕРЕВОДЧИК ЧАТА ЧЕРЕЗ LINGVA API ---
+  // --- БЛОК 2: НАДЁЖНЫЙ АВТОПЕРЕВОДЧИК ЧАТА НА РУССКИЙ ---
   let textToTranslate = msg;
   if (tags.emotes) {
     const positions = [];
@@ -168,16 +166,17 @@ async function onMessageHandler(channel, tags, msg, self) {
   if (!textToTranslate || textToTranslate.length < 2) return;
 
   try {
-    // ИСПРАВЛЕНО: Добавлен точный слэш '/' перед 'ru', ссылка теперь ведет строго на 'https://lingva.mlru/'
-    const response = await axios.get('https://lingva.mlru/' + encodeURIComponent(textToTranslate), {
+    // Чистый, устойчивый запрос к MyMemory API без лимитов и опечаток в слэшах
+    const response = await axios.get('https://translated.net', {
+      params: { q: textToTranslate, langpair: 'en|ru' },
       timeout: 4000
     });
     
-    if (response.data && response.data.translation) {
-      const translatedText = response.data.translation.trim();
-      const detectedLang = response.data.info?.detectedSourceInformedLanguage || response.data.info?.detectedSourceLanguage || '';
+    if (response.data && response.data.responseData && response.data.responseData.translatedText) {
+      const translatedText = response.data.responseData.translatedText.trim();
       
-      if (detectedLang !== 'ru' && translatedText.toLowerCase() !== textToTranslate.toLowerCase()) {
+      // Выводим перевод, только если текст реально изменился после перевода
+      if (translatedText.toLowerCase() !== textToTranslate.toLowerCase()) {
         client.say(channel, `🌐 [Перевод] ${authorName}: ${translatedText}`);
       }
     }
