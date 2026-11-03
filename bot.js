@@ -63,7 +63,7 @@ async function onMessageHandler(channel, tags, msg, self) {
     const moneyWords = lowerMsg.split(' ').filter(w => w.trim().length > 0);
     moneyWords.shift(); 
     const rawAmount = moneyWords.shift(); 
-    const rawFrom = moneyCmd = moneyWords.shift();   
+    const rawFrom = moneyWords.shift();   
     const rawTo = moneyWords.shift();     
 
     const amount = parseFloat(rawAmount);
@@ -98,7 +98,6 @@ async function onMessageHandler(channel, tags, msg, self) {
     return;
   }
 
-  // СВЕРХСТАБИЛЬНЫЙ ПОИСК ПОГОДЫ ЧЕРЕЗ НЕЗАБЛОКИРОВАННЫЙ ЗЕРКАЛЬНЫЙ ШЛЮЗ V2
   if (lowerMsg.startsWith('!weather') || lowerMsg.startsWith('!погода')) {
     let city = parts.slice(1).join(' ').trim();
     if (!city) return client.say(channel, `⚠ Укажите город. Пример: !weather Москва`);
@@ -112,7 +111,6 @@ async function onMessageHandler(channel, tags, msg, self) {
     return;
   }
 
-  // СВЕРХСТАБИЛЬНОЕ ВРЕМЯ ЧЕРЕЗ АВТОНОМНЫЕ РЕГИОНЫ БЕЗ СБОЕВ В КОРДИНАТАХ
   if (lowerMsg.startsWith('!time') || lowerMsg.startsWith('!время')) {
     let city = parts.slice(1).join(' ').trim().toLowerCase();
     let opt = { hour: '2-digit', minute: '2-digit', hour12: false };
@@ -165,6 +163,10 @@ async function onMessageHandler(channel, tags, msg, self) {
       }
     }
   } catch (e) {}
+}
+
+function onConnectedHandler(addr, port) {
+  console.log(`* Бот успешно подключился к ${addr}:${port}`);
 }
 
 const http = require('http');
