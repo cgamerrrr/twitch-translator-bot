@@ -1,12 +1,17 @@
+
 {
   "name": "cgamer-twitch-bot",
   "version": "1.0.0",
-  "main": "bot.js",
+  "description": "Twitch bot with fishing, economy, weather, currency and translation",
+  "main": "index.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "axios": "^1.7.9",
     "tmi.js": "^1.8.5"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
