@@ -1,7 +1,7 @@
 {
-  "name": "twitch-translator-bot",
-  "version": "3.1.0",
-  "description": "Twitch chat bot",
+  "name": "cgamer-translator-bot",
+  "version": "4.0.0",
+  "description": "CGamer Twitch Translator and Game Bot",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
