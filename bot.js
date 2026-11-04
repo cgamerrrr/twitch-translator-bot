@@ -883,17 +883,20 @@ client.on('message', async (channel, tags, message, self) => {
         }
 
     } catch (error) {
-        console.log(
-            'Ошибка команды:',
-            command,
-            error.message
-        );
+    console.error('========== ОШИБКА БОТА ==========');
+    console.error('Команда:', command);
+    console.error('Пользователь:', username);
+    console.error('Сообщение:', error.message);
+    console.error('Код:', error.code);
+    console.error('HTTP статус:', error.response?.status);
+    console.error('Ответ сервера:', error.response?.data);
+    console.error('=================================');
 
-        client.say(
-            channel,
-            `❌ @${username}, не удалось выполнить команду. Попробуй позже.`
-        );
-    }
+    client.say(
+        channel,
+        ❌ @${username}, ошибка выполнения команды.
+    );
+}
 });
 
 // ==================================================
