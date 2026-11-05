@@ -1,3 +1,4 @@
+
 'use strict';
 
 const tmi = require('tmi.js');
@@ -19,6 +20,7 @@ const FISH_COOLDOWN = 15 * 1000;
 const AUTO_TRANSLATE_COOLDOWN = 8000;
 const MAX_TRANSLATE_LENGTH = 450;
 const MAX_CHAT_OUTPUT = 350;
+const COMMAND_COOLDOWN = 1500;
 
 const IGNORED_USERS = new Set([
   'cgamer_bot',
@@ -34,10 +36,10 @@ if (!OAUTH) {
   process.exit(1);
 }
 
-// ==================== HTTP-СЕРВЕР RENDER ====================
+// ==================== HTTP-СЕРВЕР ====================
 
 const server = http.createServer((req, res) => {
-  if (req.url === '/health' || req.url === '/') {
+  if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8'
     });
@@ -48,6 +50,7 @@ const server = http.createServer((req, res) => {
   res.writeHead(404, {
     'Content-Type': 'text/plain; charset=utf-8'
   });
+
   res.end('Not found');
 });
 
@@ -72,31 +75,115 @@ const client = new tmi.Client({
   channels: [CHANNEL]
 });
 
+const TWITCH_CHANNEL = `#${CHANNEL}`;
+
+// ==================== ОТПРАВКА СООБЩЕНИЙ ====================
+
+function say(message) {
+  const text = String(message || '').trim();
+
+  if (!text) return;
+
+  // Ограничение длины сообщения Twitch
+  client.say(TWITCH_CHANNEL, text.slice(0, 450))
+    .catch(error => {
+      console.error('Ошибка отправки сообщения:', error.message);
+    });
+}
+
 // ==================== ПРОФИЛИ И СОХРАНЕНИЕ ====================
 
 let profiles = {};
 
+function createProfile() {
+  return {
+    coins: 100,
+    xp: 0,
+    level: 1,
+    fish: 0,
+    rareFish: 0,
+    legendaryFish: 0,
+    totalCatches: 0,
+    rod: 'Обычная',
+    lastFish: 0,
+    lastDaily: '',
+    createdAt: Date.now()
+  };
+}
+
+function normalizeProfile(p) {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) {
+    return createProfile();
+  }
+
+  const defaults = createProfile();
+
+  for (const key of Object.keys(defaults)) {
+    if (p[key] === undefined || p[key] === null) {
+      p[key] = defaults[key];
+    }
+  }
+
+  p.coins = Math.max(0, Number(p.coins) || 0);
+  p.xp = Math.max(0, Number(p.xp) || 0);
+  p.level = Math.max(1, Math.floor(Number(p.level) || 1));
+  p.fish = Math.max(0, Number(p.fish) || 0);
+  p.rareFish = Math.max(0, Number(p.rareFish) || 0);
+  p.legendaryFish = Math.max(0, Number(p.legendaryFish) || 0);
+  p.totalCatches = Math.max(0, Number(p.totalCatches) || 0);
+  p.lastFish = Math.max(0, Number(p.lastFish) || 0);
+
+  if (!['Обычная', 'Улучшенная', 'Золотая'].includes(p.rod)) {
+    p.rod = 'Обычная';
+  }
+
+  p.lastDaily = String(p.lastDaily || '');
+
+  return p;
+}
+
 function loadProfiles() {
   try {
-    const directory = path.dirname(DATA_FILE);
-    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(path.dirname(DATA_FILE), {
+      recursive: true
+    });
 
     if (!fs.existsSync(DATA_FILE)) {
       profiles = {};
-      console.log('Файл профилей не найден. Будет создан новый.');
+      console.log('Файл профилей отсутствует. Будет создан новый.');
       return;
     }
 
     const data = fs.readFileSync(DATA_FILE, 'utf8');
     const parsed = JSON.parse(data);
 
-    profiles = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed
-      : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Неверный формат файла профилей');
+    }
+
+    profiles = parsed;
+
+    for (const username of Object.keys(profiles)) {
+      profiles[username] = normalizeProfile(profiles[username]);
+    }
 
     console.log(`Загружено профилей: ${Object.keys(profiles).length}`);
+
   } catch (error) {
     console.error('Ошибка загрузки профилей:', error.message);
+
+    // Не перезаписываем повреждённый файл автоматически
+    const backupFile = `${DATA_FILE}.corrupted-${Date.now()}`;
+
+    try {
+      if (fs.existsSync(DATA_FILE)) {
+        fs.copyFileSync(DATA_FILE, backupFile);
+        console.log(`Повреждённый файл сохранён: ${backupFile}`);
+      }
+    } catch (backupError) {
+      console.error('Ошибка резервного копирования:', backupError.message);
+    }
+
     profiles = {};
   }
 }
@@ -104,7 +191,10 @@ function loadProfiles() {
 function saveProfiles() {
   try {
     const directory = path.dirname(DATA_FILE);
-    fs.mkdirSync(directory, { recursive: true });
+
+    fs.mkdirSync(directory, {
+      recursive: true
+    });
 
     const tempFile = `${DATA_FILE}.${process.pid}.tmp`;
 
@@ -115,6 +205,7 @@ function saveProfiles() {
     );
 
     fs.renameSync(tempFile, DATA_FILE);
+
   } catch (error) {
     console.error('Ошибка сохранения профилей:', error.message);
   }
@@ -124,46 +215,17 @@ function getProfile(username) {
   const name = String(username || '').trim().toLowerCase();
 
   if (!name) {
-    throw new Error('Не удалось определить имя пользователя Twitch.');
+    throw new Error('Не удалось определить пользователя.');
   }
 
-  if (
-    !profiles[name] ||
-    typeof profiles[name] !== 'object' ||
-    Array.isArray(profiles[name])
-  ) {
-    profiles[name] = {
-      coins: 100,
-      xp: 0,
-      level: 1,
-      fish: 0,
-      rareFish: 0,
-      legendaryFish: 0,
-      totalCatches: 0,
-      rod: 'Обычная',
-      lastFish: 0,
-      lastDaily: '',
-      createdAt: Date.now()
-    };
-
+  if (!Object.prototype.hasOwnProperty.call(profiles, name)) {
+    profiles[name] = createProfile();
     saveProfiles();
   }
 
-  const p = profiles[name];
+  profiles[name] = normalizeProfile(profiles[name]);
 
-  // Совместимость со старыми профилями
-  p.coins = Math.max(0, Number(p.coins) || 0);
-  p.xp = Math.max(0, Number(p.xp) || 0);
-  p.level = Math.max(1, Number(p.level) || 1);
-  p.fish = Math.max(0, Number(p.fish) || 0);
-  p.rareFish = Math.max(0, Number(p.rareFish) || 0);
-  p.legendaryFish = Math.max(0, Number(p.legendaryFish) || 0);
-  p.totalCatches = Math.max(0, Number(p.totalCatches) || 0);
-  p.rod = p.rod || 'Обычная';
-  p.lastFish = Number(p.lastFish) || 0;
-  p.lastDaily = p.lastDaily || '';
-
-  return p;
+  return profiles[name];
 }
 
 // ==================== ОПЫТ И УРОВНИ ====================
@@ -171,7 +233,11 @@ function getProfile(username) {
 function addXP(username, amount) {
   const profile = getProfile(username);
 
-  profile.xp += amount;
+  const xpAmount = Math.max(0, Math.floor(Number(amount) || 0));
+
+  if (!xpAmount) return;
+
+  profile.xp += xpAmount;
 
   let leveledUp = false;
 
@@ -184,8 +250,7 @@ function addXP(username, amount) {
   saveProfiles();
 
   if (leveledUp) {
-    client.say(
-      `#${CHANNEL}`,
+    say(
       `🎉 @${username}, новый уровень! Теперь у тебя ${profile.level}-й уровень!`
     );
   }
@@ -225,27 +290,24 @@ function getRandomFish(rod) {
   const adjusted = fishList.map(fish => {
     let chance = fish.chance;
 
-    if (
-      fish.rarity === 'редкая' ||
-      fish.rarity === 'легендарная'
-    ) {
+    if (fish.rarity === 'редкая' || fish.rarity === 'легендарная') {
       chance += bonus;
     }
 
-    return { ...fish, chance };
+    return {
+      ...fish,
+      chance
+    };
   });
 
-  const total = adjusted.reduce(
-    (sum, fish) => sum + fish.chance,
-    0
-  );
+  const total = adjusted.reduce((sum, fish) => sum + fish.chance, 0);
 
   let random = Math.random() * total;
 
   for (const fish of adjusted) {
     random -= fish.chance;
 
-    if (random <= 0) {
+    if (random < 0) {
       return fish;
     }
   }
@@ -253,7 +315,7 @@ function getRandomFish(rod) {
   return adjusted[0];
 }
 
-// ==================== КОМАНДА РЫБАЛКА ====================
+// ==================== РЫБАЛКА ====================
 
 function fishCommand(username) {
   const profile = getProfile(username);
@@ -262,8 +324,7 @@ function fishCommand(username) {
   const remaining = FISH_COOLDOWN - (now - profile.lastFish);
 
   if (remaining > 0) {
-    client.say(
-      `#${CHANNEL}`,
+    say(
       `🎣 @${username}, подожди ${Math.ceil(remaining / 1000)} сек. перед следующей рыбалкой.`
     );
     return;
@@ -285,11 +346,10 @@ function fishCommand(username) {
     profile.legendaryFish++;
   }
 
-  saveProfiles();
   addXP(username, fish.xp);
+  saveProfiles();
 
-  client.say(
-    `#${CHANNEL}`,
+  say(
     `🎣 @${username} поймал ${fish.name}! Редкость: ${fish.rarity}. +${fish.coins} монет, +${fish.xp} XP.`
   );
 }
@@ -299,15 +359,15 @@ function fishCommand(username) {
 function dailyCommand(username) {
   const profile = getProfile(username);
 
-  const today = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'Europe/Moscow'
-  });
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
 
   if (profile.lastDaily === today) {
-    client.say(
-      `#${CHANNEL}`,
-      `🎁 @${username}, ты уже получил ежедневную награду сегодня.`
-    );
+    say(`🎁 @${username}, ты уже получил ежедневную награду сегодня.`);
     return;
   }
 
@@ -318,18 +378,16 @@ function dailyCommand(username) {
 
   saveProfiles();
 
-  client.say(
-    `#${CHANNEL}`,
+  say(
     `🎁 @${username}, ежедневная награда получена: +${reward} монет! Баланс: ${profile.coins}.`
   );
 }
 
-// ==================== МАГАЗИН УДОЧЕК ====================
+// ==================== МАГАЗИН ====================
 
-function shopCommand(username) {
-  client.say(
-    `#${CHANNEL}`,
-    `🛒 Магазин: Обычная — бесплатно; Улучшенная — 500 монет; Золотая — 1500 монет. Покупка: !купить улучшенная или !купить золотая.`
+function shopCommand() {
+  say(
+    '🛒 Магазин: Обычная — бесплатно; Улучшенная — 500 монет; Золотая — 1500 монет. Покупка: !купить улучшенная или !купить золотая.'
   );
 }
 
@@ -344,26 +402,19 @@ function buyRodCommand(username, rodName) {
   } else if (normalized === 'золотая') {
     rod = 'Золотая';
   } else {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, такой удочки нет. Используй !магазин.`
-    );
+    say(`@${username}, такой удочки нет. Используй !магазин.`);
     return;
   }
 
   if (profile.rod === rod) {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, у тебя уже есть удочка «${rod}».`
-    );
+    say(`@${username}, у тебя уже есть удочка «${rod}».`);
     return;
   }
 
   const price = rods[rod].price;
 
   if (profile.coins < price) {
-    client.say(
-      `#${CHANNEL}`,
+    say(
       `@${username}, недостаточно монет. Нужно ${price}, у тебя ${profile.coins}.`
     );
     return;
@@ -374,28 +425,24 @@ function buyRodCommand(username, rodName) {
 
   saveProfiles();
 
-  client.say(
-    `#${CHANNEL}`,
-    `🎣 @${username}, ты купил удочку «${rod}» за ${price} монет!`
-  );
+  say(`🎣 @${username}, ты купил удочку «${rod}» за ${price} монет!`);
 }
-// ==================== ПРОФИЛЬ И БАЛАНС ====================
+
+// ==================== ПРОФИЛЬ ====================
 
 function profileCommand(username) {
-  const profile = getProfile(username);
+  const p = getProfile(username);
 
-  client.say(
-    `#${CHANNEL}`,
-    `👤 @${username}: уровень ${profile.level}, XP ${profile.xp}/${profile.level * 100}, монеты ${profile.coins}, рыба ${profile.fish}, редкая ${profile.rareFish}, легендарная ${profile.legendaryFish}, всего уловов ${profile.totalCatches}, удочка ${profile.rod}.`
+  say(
+    `👤 @${username}: уровень ${p.level}, XP ${p.xp}/${p.level * 100}, монеты ${p.coins}, рыба ${p.fish}, редкая ${p.rareFish}, легендарная ${p.legendaryFish}, всего уловов ${p.totalCatches}, удочка ${p.rod}.`
   );
 }
 
 function balanceCommand(username) {
-  const profile = getProfile(username);
+  const p = getProfile(username);
 
-  client.say(
-    `#${CHANNEL}`,
-    `💰 @${username}, баланс: ${profile.coins} монет. Уровень: ${profile.level}. XP: ${profile.xp}/${profile.level * 100}.`
+  say(
+    `💰 @${username}, баланс: ${p.coins} монет. Уровень: ${p.level}. XP: ${p.xp}/${p.level * 100}.`
   );
 }
 
@@ -403,11 +450,12 @@ function balanceCommand(username) {
 
 function topCommand() {
   const top = Object.entries(profiles)
+    .map(([name, p]) => [name, normalizeProfile(p)])
     .sort((a, b) => b[1].coins - a[1].coins)
     .slice(0, 5);
 
   if (!top.length) {
-    client.say(`#${CHANNEL}`, 'Пока нет игроков в рейтинге.');
+    say('Пока нет игроков в рейтинге.');
     return;
   }
 
@@ -415,19 +463,17 @@ function topCommand() {
     `${i + 1}. ${name} — ${p.coins} монет`
   );
 
-  client.say(
-    `#${CHANNEL}`,
-    `🏆 ТОП БОГАЧЕЙ: ${result.join(' | ')}`
-  );
+  say(`🏆 ТОП БОГАЧЕЙ: ${result.join(' | ')}`);
 }
 
 function fishTopCommand() {
   const top = Object.entries(profiles)
+    .map(([name, p]) => [name, normalizeProfile(p)])
     .sort((a, b) => b[1].totalCatches - a[1].totalCatches)
     .slice(0, 5);
 
   if (!top.length) {
-    client.say(`#${CHANNEL}`, 'Пока нет рыбаков в рейтинге.');
+    say('Пока нет рыбаков в рейтинге.');
     return;
   }
 
@@ -435,13 +481,10 @@ function fishTopCommand() {
     `${i + 1}. ${name} — ${p.totalCatches} уловов`
   );
 
-  client.say(
-    `#${CHANNEL}`,
-    `🎣 ТОП РЫБАКОВ: ${result.join(' | ')}`
-  );
+  say(`🎣 ТОП РЫБАКОВ: ${result.join(' | ')}`);
 }
 
-// ==================== ЯЗЫКИ И ПЕРЕВОД ====================
+// ==================== ЯЗЫКИ ====================
 
 const languages = {
   'английский': 'en',
@@ -491,26 +534,21 @@ const languages = {
 
 function getLanguageCode(value) {
   const key = String(value || '').toLowerCase().trim();
-
   return languages[key] || key;
 }
 
-// ==================== РАЗБОР НАЗВАНИЯ ЯЗЫКА ====================
-
 function parseLanguageAndText(args) {
-  const normalized = args.join(' ').trim().toLowerCase();
+  const original = args.join(' ').trim();
+  const normalized = original.toLowerCase();
 
-  const languageNames = Object.keys(languages)
+  const names = Object.keys(languages)
     .sort((a, b) => b.length - a.length);
 
-  for (const name of languageNames) {
+  for (const name of names) {
     if (normalized.startsWith(name + ' ')) {
-      const original = args.join(' ');
-      const message = original.slice(name.length).trim();
-
       return {
         language: name,
-        message
+        message: original.slice(name.length).trim()
       };
     }
   }
@@ -518,7 +556,7 @@ function parseLanguageAndText(args) {
   if (args.length >= 2) {
     return {
       language: args[0],
-      message: args.slice(1).join(' ')
+      message: args.slice(1).join(' ').trim()
     };
   }
 
@@ -546,21 +584,27 @@ async function translateText(text, from, to) {
       }
     );
 
-    const translated =
-      response.data?.responseData?.translatedText;
+    if (response.data?.responseStatus !== 200) {
+      throw new Error(
+        response.data?.responseDetails || 'Ошибка сервиса перевода'
+      );
+    }
+
+    const translated = response.data?.responseData?.translatedText;
 
     if (!translated) {
       throw new Error('Пустой ответ сервиса перевода');
     }
 
     return translated;
+
   } catch (error) {
     console.error('Ошибка перевода:', error.message);
     return null;
   }
 }
 
-// ==================== АВТОПЕРЕВОД НА РУССКИЙ ====================
+// ==================== АВТОПЕРЕВОД ====================
 
 const autoTranslateUsers = new Map();
 const translatingUsers = new Set();
@@ -592,10 +636,10 @@ async function autoTranslateToRussian(username, message) {
 
     autoTranslateUsers.set(username, Date.now());
 
-    client.say(
-      `#${CHANNEL}`,
+    say(
       `🌐 @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`
     );
+
   } finally {
     translatingUsers.delete(username);
   }
@@ -611,68 +655,58 @@ async function manualTranslateCommand(username, message) {
   );
 
   if (!translated) {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, не удалось выполнить перевод.`
-    );
+    say(`@${username}, не удалось выполнить перевод. Проверь текст или попробуй позже.`);
     return;
   }
 
-  client.say(
-    `#${CHANNEL}`,
+  say(
     `🌐 Перевод для @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`
   );
 }
 
 // ==================== ПЕРЕВОД С РУССКОГО ====================
 
-async function translateFromRussianCommand(
-  username,
-  language,
-  message
-) {
+async function translateFromRussianCommand(username, language, message) {
   const lang = getLanguageCode(language);
 
-  if (!/^[a-z-]{2,10}$/i.test(lang)) {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, не удалось распознать язык.`
-    );
+  if (!/^[a-z]{2,3}(-[A-Za-z0-9]+)?$/i.test(lang)) {
+    say(`@${username}, не удалось распознать язык.`);
     return;
   }
 
   const translated = await translateText(message, 'ru', lang);
 
   if (!translated) {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, перевод не выполнен.`
-    );
+    say(`@${username}, перевод не выполнен.`);
     return;
   }
 
-  client.say(
-    `#${CHANNEL}`,
+  say(
     `🌍 Перевод для @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`
   );
 }
+
 // ==================== ВАЛЮТЫ ЦБ РФ ====================
 
 const currencyNames = {
   'доллар': 'USD',
   'долларов': 'USD',
   'доллара': 'USD',
+  'доллар сша': 'USD',
   'usd': 'USD',
   'евро': 'EUR',
   'eur': 'EUR',
   'фунт': 'GBP',
   'фунтов': 'GBP',
+  'фунта': 'GBP',
   'gbp': 'GBP',
   'юань': 'CNY',
   'юаней': 'CNY',
+  'юаня': 'CNY',
   'cny': 'CNY',
   'лира': 'TRY',
   'лир': 'TRY',
+  'лиры': 'TRY',
   'try': 'TRY',
   'тенге': 'KZT',
   'kzt': 'KZT',
@@ -685,64 +719,57 @@ const currencyNames = {
   'chf': 'CHF'
 };
 
+function getCurrencyCode(currency) {
+  const value = String(currency || '').toLowerCase().trim();
+
+  return currencyNames[value] || value.toUpperCase();
+}
+
 async function getCurrencyRates() {
   const response = await axios.get(
     'https://www.cbr-xml-daily.ru/daily_json.js',
-    { timeout: 10000 }
+    {
+      timeout: 10000
+    }
   );
 
   return response.data.Valute;
 }
 
 async function currencyCommand(username, currency) {
-  const code =
-    currencyNames[currency.toLowerCase()] ||
-    currency.toUpperCase();
+  const code = getCurrencyCode(currency);
 
   try {
     const rates = await getCurrencyRates();
     const item = rates[code];
 
     if (!item) {
-      client.say(
-        `#${CHANNEL}`,
-        `@${username}, валюта ${code} не найдена в данных ЦБ РФ.`
-      );
+      say(`@${username}, валюта ${code} не найдена в данных ЦБ РФ.`);
       return;
     }
 
     const rate = item.Value / item.Nominal;
 
-    client.say(
-      `#${CHANNEL}`,
+    say(
       `💱 ${item.Name}: ${rate.toFixed(2)} RUB за 1 ${code}. По данным ЦБ РФ.`
     );
+
   } catch (error) {
     console.error('Ошибка курса валют:', error.message);
-
-    client.say(
-      `#${CHANNEL}`,
-      'Не удалось получить курс валют.'
-    );
+    say('Не удалось получить курс валют.');
   }
 }
 
 async function convertCommand(username, amount, currency) {
   const value = Number(String(amount).replace(',', '.'));
-
-  const code =
-    currencyNames[currency.toLowerCase()] ||
-    currency.toUpperCase();
+  const code = getCurrencyCode(currency);
 
   if (
     !Number.isFinite(value) ||
     value <= 0 ||
     value > 1000000000
   ) {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, укажи корректную сумму.`
-    );
+    say(`@${username}, укажи корректную сумму.`);
     return;
   }
 
@@ -751,27 +778,20 @@ async function convertCommand(username, amount, currency) {
     const item = rates[code];
 
     if (!item) {
-      client.say(
-        `#${CHANNEL}`,
-        `Валюта ${code} не найдена в данных ЦБ РФ.`
-      );
+      say(`@${username}, валюта ${code} не найдена в данных ЦБ РФ.`);
       return;
     }
 
     const rate = item.Value / item.Nominal;
     const result = value * rate;
 
-    client.say(
-      `#${CHANNEL}`,
+    say(
       `💰 ${value} ${code} ≈ ${result.toFixed(2)} RUB. По данным ЦБ РФ.`
     );
+
   } catch (error) {
     console.error('Ошибка конвертации:', error.message);
-
-    client.say(
-      `#${CHANNEL}`,
-      'Не удалось выполнить конвертацию.'
-    );
+    say('Не удалось выполнить конвертацию.');
   }
 }
 
@@ -781,10 +801,7 @@ async function weatherCommand(username, city) {
   city = String(city || '').trim();
 
   if (!city) {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, напиши город. Пример: !погода Москва`
-    );
+    say(`@${username}, напиши город. Пример: !погода Москва`);
     return;
   }
 
@@ -811,22 +828,13 @@ async function weatherCommand(username, city) {
       current.weatherDesc?.[0]?.value ||
       'Нет описания';
 
-    const temp = current.temp_C;
-    const feels = current.FeelsLikeC;
-    const humidity = current.humidity;
-    const wind = current.windspeedKmph;
-
-    client.say(
-      `#${CHANNEL}`,
-      `🌤️ ${city}: ${description}, температура ${temp}°C, ощущается как ${feels}°C, влажность ${humidity}%, ветер ${wind} км/ч.`
+    say(
+      `🌤️ ${city}: ${description}, температура ${current.temp_C}°C, ощущается как ${current.FeelsLikeC}°C, влажность ${current.humidity}%, ветер ${current.windspeedKmph} км/ч.`
     );
+
   } catch (error) {
     console.error('Ошибка погоды:', error.message);
-
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, не удалось получить погоду для ${city}.`
-    );
+    say(`@${username}, не удалось получить погоду для ${city}.`);
   }
 }
 
@@ -928,25 +936,21 @@ const cityTimeZones = {
   'ташкент': 'Asia/Tashkent'
 };
 
-// ==================== КОМАНДА ВРЕМЯ ====================
+// ==================== ВРЕМЯ ====================
 
 function timeCommand(username, city) {
+  city = String(city || '').trim();
+
   if (!city) {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, укажи город. Пример: !время Москва`
-    );
+    say(`@${username}, укажи город. Пример: !время Москва`);
     return;
   }
 
-  const key = city.toLowerCase().trim();
+  const key = city.toLowerCase();
   const timeZone = cityTimeZones[key];
 
   if (!timeZone) {
-    client.say(
-      `#${CHANNEL}`,
-      `@${username}, город пока отсутствует в списке часовых поясов.`
-    );
+    say(`@${username}, город пока отсутствует в списке часовых поясов.`);
     return;
   }
 
@@ -958,7 +962,7 @@ function timeCommand(username, city) {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
-      hour12: false
+      hourCycle: 'h23'
     }).format(now);
 
     const date = new Intl.DateTimeFormat('ru-RU', {
@@ -968,25 +972,19 @@ function timeCommand(username, city) {
       year: 'numeric'
     }).format(now);
 
-    client.say(
-      `#${CHANNEL}`,
-      `🕒 ${city}: ${time}, ${date}.`
-    );
+    say(`🕒 ${city}: ${time}, ${date}.`);
+
   } catch (error) {
     console.error('Ошибка времени:', error.message);
-
-    client.say(
-      `#${CHANNEL}`,
-      'Не удалось определить время.'
-    );
+    say('Не удалось определить время.');
   }
 }
+
 // ==================== ПОМОЩЬ ====================
 
 function helpCommand() {
-  client.say(
-    `#${CHANNEL}`,
-    '📚 Команды: !профиль, !баланс, !рыбалка, !ежедневно, !магазин, !купить улучшенная, !купить золотая, !топ, !топрыбаки, !погода город, !время город, !курс USD, !конверт 100 USD, !перевод текст, !на английский язык текст.'
+  say(
+    '📚 Команды: !профиль, !баланс, !рыбалка, !ежедневно, !магазин, !купить улучшенная, !купить золотая, !топ, !топрыбаки, !погода город, !время город, !курс USD, !конверт 100 USD, !перевод текст, !на английский текст.'
   );
 }
 
@@ -994,7 +992,7 @@ function helpCommand() {
 
 const commandCooldowns = new Map();
 
-function isOnCooldown(username, command, cooldown = 1500) {
+function isOnCooldown(username, command, cooldown = COMMAND_COOLDOWN) {
   const key = `${username}:${command}`;
   const now = Date.now();
   const last = commandCooldowns.get(key) || 0;
@@ -1019,22 +1017,21 @@ function isOnCooldown(username, command, cooldown = 1500) {
 // ==================== ОБРАБОТКА СООБЩЕНИЙ ====================
 
 client.on('message', async (channel, tags, message, self) => {
-  if (self) return;
+  if (self || isShuttingDown) return;
 
-  const username = (tags.username || '').toLowerCase();
+  const username = String(tags.username || '').toLowerCase();
 
-  if (!username || IGNORED_USERS.has(username)) {
-    return;
-  }
+  if (!username || IGNORED_USERS.has(username)) return;
 
   const text = String(message || '').trim();
 
   if (!text || text.length > 500) return;
 
-  if (String(channel).toLowerCase() !== `#${CHANNEL.toLowerCase()}`) {
+  if (String(channel).toLowerCase() !== TWITCH_CHANNEL.toLowerCase()) {
     return;
   }
 
+  // Обычные сообщения: автоматический перевод
   if (!text.startsWith('!')) {
     await autoTranslateToRussian(username, text);
     return;
@@ -1048,6 +1045,7 @@ client.on('message', async (channel, tags, message, self) => {
 
   try {
     switch (command) {
+
       case '!помощь':
       case '!help':
         helpCommand();
@@ -1076,16 +1074,13 @@ client.on('message', async (channel, tags, message, self) => {
 
       case '!магазин':
       case '!shop':
-        shopCommand(username);
+        shopCommand();
         break;
 
       case '!купить':
       case '!buy':
         if (!args[0]) {
-          client.say(
-            `#${CHANNEL}`,
-            `@${username}, напиши !купить улучшенная или !купить золотая.`
-          );
+          say(`@${username}, напиши !купить улучшенная или !купить золотая.`);
         } else {
           buyRodCommand(username, args.join(' '));
         }
@@ -1114,10 +1109,7 @@ client.on('message', async (channel, tags, message, self) => {
       case '!курс':
       case '!rate':
         if (!args[0]) {
-          client.say(
-            `#${CHANNEL}`,
-            `@${username}, пример: !курс USD`
-          );
+          say(`@${username}, пример: !курс USD`);
         } else {
           await currencyCommand(username, args[0]);
         }
@@ -1126,10 +1118,7 @@ client.on('message', async (channel, tags, message, self) => {
       case '!конверт':
       case '!money':
         if (args.length < 2) {
-          client.say(
-            `#${CHANNEL}`,
-            `@${username}, пример: !конверт 100 USD`
-          );
+          say(`@${username}, пример: !конверт 100 USD`);
         } else {
           await convertCommand(username, args[0], args[1]);
         }
@@ -1138,10 +1127,7 @@ client.on('message', async (channel, tags, message, self) => {
       case '!перевод':
       case '!translate':
         if (!args.length) {
-          client.say(
-            `#${CHANNEL}`,
-            `@${username}, пример: !перевод Hello, how are you?`
-          );
+          say(`@${username}, пример: !перевод Hello, how are you?`);
         } else {
           await manualTranslateCommand(username, args.join(' '));
         }
@@ -1149,18 +1135,12 @@ client.on('message', async (channel, tags, message, self) => {
 
       case '!на':
         if (args.length < 2) {
-          client.say(
-            `#${CHANNEL}`,
-            `@${username}, пример: !на английский Привет, как дела?`
-          );
+          say(`@${username}, пример: !на английский Привет, как дела?`);
         } else {
           const parsed = parseLanguageAndText(args);
 
           if (!parsed || !parsed.message) {
-            client.say(
-              `#${CHANNEL}`,
-              `@${username}, пример: !на английский язык Привет, как дела?`
-            );
+            say(`@${username}, пример: !на английский язык Привет, как дела?`);
           } else {
             await translateFromRussianCommand(
               username,
@@ -1174,8 +1154,9 @@ client.on('message', async (channel, tags, message, self) => {
       default:
         break;
     }
+
   } catch (error) {
-    console.error(`Ошибка команды ${command}:`, error);
+    console.error(`Ошибка команды ${command}:`, error.message);
   }
 });
 
@@ -1219,17 +1200,26 @@ function shutdown(signal) {
 
   saveProfiles();
 
-  const forceExit = setTimeout(() => process.exit(1), 10000);
+  const forceExit = setTimeout(() => {
+    process.exit(1);
+  }, 10000);
+
   forceExit.unref();
 
-  Promise.resolve(client.disconnect())
+  Promise.resolve()
+    .then(() => client.disconnect())
     .catch(error => {
       console.error('Ошибка отключения Twitch:', error.message);
     })
     .finally(() => {
-      server.close(() => process.exit(0));
+      server.close(() => {
+        clearTimeout(forceExit);
+        process.exit(0);
+      });
 
-      setTimeout(() => process.exit(0), 1500).unref();
+      setTimeout(() => {
+        process.exit(0);
+      }, 1500).unref();
     });
 }
 
@@ -1238,7 +1228,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 process.on('uncaughtException', error => {
   console.error('Критическая ошибка:', error);
-  saveProfiles();
+  shutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', reason => {
