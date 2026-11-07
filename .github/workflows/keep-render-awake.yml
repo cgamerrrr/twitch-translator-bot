@@ -1,0 +1,17 @@
+
+name: Keep cgamer_bot awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render
+        run: |
+          curl --fail --silent --show-error \
+            --max-time 90 \
+            https://twitch-translator-bot-8zs7.onrender.com/health
