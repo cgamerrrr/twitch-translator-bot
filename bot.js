@@ -7,7 +7,9 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
-// ==================== НАСТРОЙКИ ====================
+// ==================================================
+// НАСТРОЙКИ
+// ==================================================
 
 const BOT_USERNAME = 'cgamer_bot';
 const CHANNEL = 'cgamer__';
@@ -17,10 +19,20 @@ const PORT = Number(process.env.PORT) || 10000;
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'fish_data.json');
 
 const FISH_COOLDOWN = 15 * 1000;
-const AUTO_TRANSLATE_COOLDOWN = 8000;
+const COMMAND_COOLDOWN = 1500;
+
 const MAX_TRANSLATE_LENGTH = 450;
 const MAX_CHAT_OUTPUT = 350;
-const COMMAND_COOLDOWN = 1500;
+
+const AUTO_TRANSLATE_COOLDOWN = 12000;
+const MANUAL_TRANSLATE_COOLDOWN = 5000;
+
+const TRANSLATION_INTERVAL = 1500;
+const TRANSLATION_QUEUE_LIMIT = 25;
+const TRANSLATION_CACHE_LIMIT = 1000;
+const TRANSLATION_CACHE_TTL = 6 * 60 * 60 * 1000;
+
+const TRANSLATION_ERROR_PAUSE = 60000;
 
 const IGNORED_USERS = new Set([
   'cgamer_bot',
@@ -31,18 +43,44 @@ const IGNORED_USERS = new Set([
   'jeetbot'
 ]);
 
+let isShuttingDown = false;
+
 if (!OAUTH) {
   console.error('ОШИБКА: добавь TWITCH_OAUTH в переменные окружения Render.');
   process.exit(1);
 }
 
-// ==================== HTTP-СЕРВЕР ====================
+// ==================================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ==================================================
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function cleanText(value) {
+  return String(value || '').trim();
+}
+
+function safeNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function formatNumber(value) {
+  return Number(value).toLocaleString('ru-RU');
+}
+
+// ==================================================
+// HTTP-СЕРВЕР
+// ==================================================
 
 const server = http.createServer((req, res) => {
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8'
     });
+
     res.end('cgamer_bot is online');
     return;
   }
@@ -58,40 +96,48 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`HTTP-сервер запущен на порту ${PORT}`);
 });
 
-// ==================== TWITCH ====================
+// ==================================================
+// TWITCH
+// ==================================================
 
 const client = new tmi.Client({
   options: {
     debug: false
   },
+
   connection: {
     reconnect: true,
     secure: true
   },
+
   identity: {
     username: BOT_USERNAME,
     password: OAUTH
   },
+
   channels: [CHANNEL]
 });
 
 const TWITCH_CHANNEL = `#${CHANNEL}`;
 
-// ==================== ОТПРАВКА СООБЩЕНИЙ ====================
+// ==================================================
+// ОТПРАВКА СООБЩЕНИЙ
+// ==================================================
 
 function say(message) {
-  const text = String(message || '').trim();
+  const text = cleanText(message);
 
-  if (!text) return;
+  if (!text || isShuttingDown) return;
 
-  // Ограничение длины сообщения Twitch
   client.say(TWITCH_CHANNEL, text.slice(0, 450))
     .catch(error => {
       console.error('Ошибка отправки сообщения:', error.message);
     });
 }
 
-// ==================== ПРОФИЛИ И СОХРАНЕНИЕ ====================
+// ==================================================
+// ПРОФИЛИ И СОХРАНЕНИЕ
+// ==================================================
 
 let profiles = {};
 
@@ -111,35 +157,41 @@ function createProfile() {
   };
 }
 
-function normalizeProfile(p) {
-  if (!p || typeof p !== 'object' || Array.isArray(p)) {
+function normalizeProfile(profile) {
+  if (
+    !profile ||
+    typeof profile !== 'object' ||
+    Array.isArray(profile)
+  ) {
     return createProfile();
   }
 
   const defaults = createProfile();
 
   for (const key of Object.keys(defaults)) {
-    if (p[key] === undefined || p[key] === null) {
-      p[key] = defaults[key];
+    if (profile[key] === undefined || profile[key] === null) {
+      profile[key] = defaults[key];
     }
   }
 
-  p.coins = Math.max(0, Number(p.coins) || 0);
-  p.xp = Math.max(0, Number(p.xp) || 0);
-  p.level = Math.max(1, Math.floor(Number(p.level) || 1));
-  p.fish = Math.max(0, Number(p.fish) || 0);
-  p.rareFish = Math.max(0, Number(p.rareFish) || 0);
-  p.legendaryFish = Math.max(0, Number(p.legendaryFish) || 0);
-  p.totalCatches = Math.max(0, Number(p.totalCatches) || 0);
-  p.lastFish = Math.max(0, Number(p.lastFish) || 0);
+  profile.coins = Math.max(0, safeNumber(profile.coins));
+  profile.xp = Math.max(0, safeNumber(profile.xp));
+  profile.level = Math.max(1, Math.floor(safeNumber(profile.level, 1)));
 
-  if (!['Обычная', 'Улучшенная', 'Золотая'].includes(p.rod)) {
-    p.rod = 'Обычная';
+  profile.fish = Math.max(0, safeNumber(profile.fish));
+  profile.rareFish = Math.max(0, safeNumber(profile.rareFish));
+  profile.legendaryFish = Math.max(0, safeNumber(profile.legendaryFish));
+  profile.totalCatches = Math.max(0, safeNumber(profile.totalCatches));
+
+  profile.lastFish = Math.max(0, safeNumber(profile.lastFish));
+
+  if (!['Обычная', 'Улучшенная', 'Золотая'].includes(profile.rod)) {
+    profile.rod = 'Обычная';
   }
 
-  p.lastDaily = String(p.lastDaily || '');
+  profile.lastDaily = String(profile.lastDaily || '');
 
-  return p;
+  return profile;
 }
 
 function loadProfiles() {
@@ -157,7 +209,11 @@ function loadProfiles() {
     const data = fs.readFileSync(DATA_FILE, 'utf8');
     const parsed = JSON.parse(data);
 
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed)
+    ) {
       throw new Error('Неверный формат файла профилей');
     }
 
@@ -172,13 +228,12 @@ function loadProfiles() {
   } catch (error) {
     console.error('Ошибка загрузки профилей:', error.message);
 
-    // Не перезаписываем повреждённый файл автоматически
     const backupFile = `${DATA_FILE}.corrupted-${Date.now()}`;
 
     try {
       if (fs.existsSync(DATA_FILE)) {
         fs.copyFileSync(DATA_FILE, backupFile);
-        console.log(`Повреждённый файл сохранён: ${backupFile}`);
+        console.log(`Резервная копия: ${backupFile}`);
       }
     } catch (backupError) {
       console.error('Ошибка резервного копирования:', backupError.message);
@@ -212,7 +267,7 @@ function saveProfiles() {
 }
 
 function getProfile(username) {
-  const name = String(username || '').trim().toLowerCase();
+  const name = cleanText(username).toLowerCase();
 
   if (!name) {
     throw new Error('Не удалось определить пользователя.');
@@ -228,12 +283,13 @@ function getProfile(username) {
   return profiles[name];
 }
 
-// ==================== ОПЫТ И УРОВНИ ====================
+// ==================================================
+// ОПЫТ И УРОВНИ
+// ==================================================
 
 function addXP(username, amount) {
   const profile = getProfile(username);
-
-  const xpAmount = Math.max(0, Math.floor(Number(amount) || 0));
+  const xpAmount = Math.max(0, Math.floor(safeNumber(amount)));
 
   if (!xpAmount) return;
 
@@ -250,13 +306,13 @@ function addXP(username, amount) {
   saveProfiles();
 
   if (leveledUp) {
-    say(
-      `🎉 @${username}, новый уровень! Теперь у тебя ${profile.level}-й уровень!`
-    );
+    say(`🎉 @${username}, новый уровень! Теперь у тебя ${profile.level}-й уровень!`);
   }
 }
 
-// ==================== РЫБА И УДОЧКИ ====================
+// ==================================================
+// РЫБА И УДОЧКИ
+// ==================================================
 
 const fishList = [
   { name: 'Карась', rarity: 'обычная', chance: 30, coins: 10, xp: 5 },
@@ -270,18 +326,9 @@ const fishList = [
 ];
 
 const rods = {
-  'Обычная': {
-    price: 0,
-    bonus: 0
-  },
-  'Улучшенная': {
-    price: 500,
-    bonus: 5
-  },
-  'Золотая': {
-    price: 1500,
-    bonus: 12
-  }
+  'Обычная': { price: 0, bonus: 0 },
+  'Улучшенная': { price: 500, bonus: 5 },
+  'Золотая': { price: 1500, bonus: 12 }
 };
 
 function getRandomFish(rod) {
@@ -294,10 +341,7 @@ function getRandomFish(rod) {
       chance += bonus;
     }
 
-    return {
-      ...fish,
-      chance
-    };
+    return { ...fish, chance };
   });
 
   const total = adjusted.reduce((sum, fish) => sum + fish.chance, 0);
@@ -307,15 +351,11 @@ function getRandomFish(rod) {
   for (const fish of adjusted) {
     random -= fish.chance;
 
-    if (random < 0) {
-      return fish;
-    }
+    if (random < 0) return fish;
   }
 
   return adjusted[0];
 }
-
-// ==================== РЫБАЛКА ====================
 
 function fishCommand(username) {
   const profile = getProfile(username);
@@ -324,9 +364,7 @@ function fishCommand(username) {
   const remaining = FISH_COOLDOWN - (now - profile.lastFish);
 
   if (remaining > 0) {
-    say(
-      `🎣 @${username}, подожди ${Math.ceil(remaining / 1000)} сек. перед следующей рыбалкой.`
-    );
+    say(`🎣 @${username}, подожди ${Math.ceil(remaining / 1000)} сек. перед следующей рыбалкой.`);
     return;
   }
 
@@ -338,23 +376,18 @@ function fishCommand(username) {
   profile.fish++;
   profile.totalCatches++;
 
-  if (fish.rarity === 'редкая') {
-    profile.rareFish++;
-  }
-
-  if (fish.rarity === 'легендарная') {
-    profile.legendaryFish++;
-  }
+  if (fish.rarity === 'редкая') profile.rareFish++;
+  if (fish.rarity === 'легендарная') profile.legendaryFish++;
 
   addXP(username, fish.xp);
   saveProfiles();
 
-  say(
-    `🎣 @${username} поймал ${fish.name}! Редкость: ${fish.rarity}. +${fish.coins} монет, +${fish.xp} XP.`
-  );
+  say(`🎣 @${username} поймал ${fish.name}! Редкость: ${fish.rarity}. +${fish.coins} монет, +${fish.xp} XP.`);
 }
 
-// ==================== ЕЖЕДНЕВНАЯ НАГРАДА ====================
+// ==================================================
+// ЕЖЕДНЕВНАЯ НАГРАДА
+// ==================================================
 
 function dailyCommand(username) {
   const profile = getProfile(username);
@@ -378,22 +411,20 @@ function dailyCommand(username) {
 
   saveProfiles();
 
-  say(
-    `🎁 @${username}, ежедневная награда получена: +${reward} монет! Баланс: ${profile.coins}.`
-  );
+  say(`🎁 @${username}, ежедневная награда: +${reward} монет! Баланс: ${profile.coins}.`);
 }
 
-// ==================== МАГАЗИН ====================
+// ==================================================
+// МАГАЗИН
+// ==================================================
 
 function shopCommand() {
-  say(
-    '🛒 Магазин: Обычная — бесплатно; Улучшенная — 500 монет; Золотая — 1500 монет. Покупка: !купить улучшенная или !купить золотая.'
-  );
+  say('🛒 Магазин: Обычная — бесплатно; Улучшенная — 500 монет; Золотая — 1500 монет. Покупка: !купить улучшенная или !купить золотая.');
 }
 
 function buyRodCommand(username, rodName) {
   const profile = getProfile(username);
-  const normalized = rodName.toLowerCase().trim();
+  const normalized = cleanText(rodName).toLowerCase();
 
   let rod;
 
@@ -414,9 +445,7 @@ function buyRodCommand(username, rodName) {
   const price = rods[rod].price;
 
   if (profile.coins < price) {
-    say(
-      `@${username}, недостаточно монет. Нужно ${price}, у тебя ${profile.coins}.`
-    );
+    say(`@${username}, недостаточно монет. Нужно ${price}, у тебя ${profile.coins}.`);
     return;
   }
 
@@ -428,25 +457,25 @@ function buyRodCommand(username, rodName) {
   say(`🎣 @${username}, ты купил удочку «${rod}» за ${price} монет!`);
 }
 
-// ==================== ПРОФИЛЬ ====================
+// ==================================================
+// ПРОФИЛЬ И БАЛАНС
+// ==================================================
 
 function profileCommand(username) {
   const p = getProfile(username);
 
-  say(
-    `👤 @${username}: уровень ${p.level}, XP ${p.xp}/${p.level * 100}, монеты ${p.coins}, рыба ${p.fish}, редкая ${p.rareFish}, легендарная ${p.legendaryFish}, всего уловов ${p.totalCatches}, удочка ${p.rod}.`
-  );
+  say(`👤 @${username}: уровень ${p.level}, XP ${p.xp}/${p.level * 100}, монеты ${p.coins}, рыба ${p.fish}, редкая ${p.rareFish}, легендарная ${p.legendaryFish}, всего уловов ${p.totalCatches}, удочка ${p.rod}.`);
 }
 
 function balanceCommand(username) {
   const p = getProfile(username);
 
-  say(
-    `💰 @${username}, баланс: ${p.coins} монет. Уровень: ${p.level}. XP: ${p.xp}/${p.level * 100}.`
-  );
+  say(`💰 @${username}, баланс: ${p.coins} монет. Уровень: ${p.level}. XP: ${p.xp}/${p.level * 100}.`);
 }
 
-// ==================== ТОП ИГРОКОВ ====================
+// ==================================================
+// РЕЙТИНГИ
+// ==================================================
 
 function topCommand() {
   const top = Object.entries(profiles)
@@ -484,7 +513,9 @@ function fishTopCommand() {
   say(`🎣 ТОП РЫБАКОВ: ${result.join(' | ')}`);
 }
 
-// ==================== ЯЗЫКИ ====================
+// ==================================================
+// ЯЗЫКИ
+// ==================================================
 
 const languages = {
   'английский': 'en',
@@ -533,7 +564,7 @@ const languages = {
 };
 
 function getLanguageCode(value) {
-  const key = String(value || '').toLowerCase().trim();
+  const key = cleanText(value).toLowerCase();
   return languages[key] || key;
 }
 
@@ -563,48 +594,219 @@ function parseLanguageAndText(args) {
   return null;
 }
 
-// ==================== ПЕРЕВОДЧИК ====================
+// ==================================================
+// ПЕРЕВОДЧИК: КЭШ И ОЧЕРЕДЬ
+// ==================================================
 
-async function translateText(text, from, to) {
-  const cleanText = String(text || '').trim();
+const translationCache = new Map();
+const translationInflight = new Map();
+const translationQueue = [];
 
-  if (!cleanText || cleanText.length > MAX_TRANSLATE_LENGTH) {
+let translationWorkerRunning = false;
+let lastTranslationRequest = 0;
+let translationPauseUntil = 0;
+
+function decodeTranslation(text) {
+  return String(text || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
+function getTranslationCache(key) {
+  const item = translationCache.get(key);
+
+  if (!item) return null;
+
+  if (Date.now() > item.expiresAt) {
+    translationCache.delete(key);
     return null;
   }
 
-  try {
-    const response = await axios.get(
-      'https://api.mymemory.translated.net/get',
-      {
-        params: {
-          q: cleanText,
-          langpair: `${from}|${to}`
-        },
-        timeout: 10000
+  return item.value;
+}
+
+function setTranslationCache(key, value) {
+  if (translationCache.size >= TRANSLATION_CACHE_LIMIT) {
+    const oldestKey = translationCache.keys().next().value;
+
+    if (oldestKey) translationCache.delete(oldestKey);
+  }
+
+  translationCache.set(key, {
+    value,
+    expiresAt: Date.now() + TRANSLATION_CACHE_TTL
+  });
+}
+
+function getRetryPause(error) {
+  const retryAfter = error.response?.headers?.['retry-after'];
+
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.min(seconds * 1000, 5 * 60 * 1000);
+    }
+  }
+
+  return TRANSLATION_ERROR_PAUSE;
+}
+
+async function requestTranslation(text, from, to) {
+  const response = await axios.get(
+    'https://api.mymemory.translated.net/get',
+    {
+      params: {
+        q: text,
+        langpair: `${from}|${to}`
+      },
+      timeout: 12000,
+      headers: {
+        'User-Agent': 'cgamer_bot/1.0'
       }
+    }
+  );
+
+  if (response.data?.responseStatus !== 200) {
+    const error = new Error(
+      response.data?.responseDetails || 'Ошибка сервиса перевода'
     );
 
-    if (response.data?.responseStatus !== 200) {
-      throw new Error(
-        response.data?.responseDetails || 'Ошибка сервиса перевода'
-      );
+    if (Number(response.data?.responseStatus) === 429) {
+      error.isRateLimit = true;
     }
 
-    const translated = response.data?.responseData?.translatedText;
+    throw error;
+  }
 
-    if (!translated) {
-      throw new Error('Пустой ответ сервиса перевода');
+  const translated = decodeTranslation(
+    response.data?.responseData?.translatedText
+  ).trim();
+
+  if (!translated) {
+    throw new Error('Пустой ответ сервиса перевода');
+  }
+
+  return translated;
+}
+
+async function processTranslationQueue() {
+  if (translationWorkerRunning) return;
+
+  translationWorkerRunning = true;
+
+  try {
+    while (translationQueue.length > 0 && !isShuttingDown) {
+      const job = translationQueue.shift();
+
+      if (Date.now() < translationPauseUntil) {
+        await sleep(translationPauseUntil - Date.now());
+      }
+
+      const waitTime = TRANSLATION_INTERVAL -
+        (Date.now() - lastTranslationRequest);
+
+      if (waitTime > 0) {
+        await sleep(waitTime);
+      }
+
+      lastTranslationRequest = Date.now();
+
+      try {
+        const result = await requestTranslation(
+          job.text,
+          job.from,
+          job.to
+        );
+
+        setTranslationCache(job.key, result);
+        job.resolve(result);
+
+      } catch (error) {
+        const status = error.response?.status;
+
+        if (status === 429 || error.isRateLimit) {
+          translationPauseUntil = Date.now() + getRetryPause(error);
+
+          console.warn(
+            `MyMemory ограничил запросы. Пауза ${Math.ceil((translationPauseUntil - Date.now()) / 1000)} сек.`
+          );
+
+        } else {
+          console.error('Ошибка перевода:', error.message);
+        }
+
+        job.resolve(null);
+      }
+
+      translationInflight.delete(job.key);
     }
 
-    return translated;
+  } finally {
+    translationWorkerRunning = false;
 
-  } catch (error) {
-    console.error('Ошибка перевода:', error.message);
-    return null;
+    if (translationQueue.length > 0 && !isShuttingDown) {
+      setTimeout(processTranslationQueue, 100);
+    }
   }
 }
 
-// ==================== АВТОПЕРЕВОД ====================
+function translateText(text, from, to) {
+  const clean = cleanText(text);
+
+  if (!clean || clean.length > MAX_TRANSLATE_LENGTH) {
+    return Promise.resolve(null);
+  }
+
+  if (Buffer.byteLength(clean, 'utf8') > 450) {
+    return Promise.resolve(null);
+  }
+
+  const key = `${from}|${to}|${clean.toLowerCase()}`;
+
+  const cached = getTranslationCache(key);
+
+  if (cached) {
+    return Promise.resolve(cached);
+  }
+
+  if (translationInflight.has(key)) {
+    return translationInflight.get(key);
+  }
+
+  if (translationQueue.length >= TRANSLATION_QUEUE_LIMIT) {
+    console.warn('Очередь переводов заполнена.');
+    return Promise.resolve(null);
+  }
+
+  let resolvePromise;
+
+  const promise = new Promise(resolve => {
+    resolvePromise = resolve;
+  });
+
+  translationInflight.set(key, promise);
+
+  translationQueue.push({
+    key,
+    text: clean,
+    from,
+    to,
+    resolve: resolvePromise
+  });
+
+  processTranslationQueue();
+
+  return promise;
+}
+
+// ==================================================
+// АВТОПЕРЕВОД
+// ==================================================
 
 const autoTranslateUsers = new Map();
 const translatingUsers = new Set();
@@ -618,6 +820,7 @@ async function autoTranslateToRussian(username, message) {
   if (message.trim().length < 8) return;
   if (message.trim().startsWith('!')) return;
 
+  autoTranslateUsers.set(username, now);
   translatingUsers.add(username);
 
   try {
@@ -634,20 +837,35 @@ async function autoTranslateToRussian(username, message) {
 
     if (normalized === original) return;
 
-    autoTranslateUsers.set(username, Date.now());
-
-    say(
-      `🌐 @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`
-    );
+    say(`🌐 @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`);
 
   } finally {
     translatingUsers.delete(username);
   }
 }
 
-// ==================== РУЧНОЙ ПЕРЕВОД НА РУССКИЙ ====================
+// ==================================================
+// РУЧНОЙ ПЕРЕВОД НА РУССКИЙ
+// ==================================================
+
+const manualTranslateUsers = new Map();
 
 async function manualTranslateCommand(username, message) {
+  const now = Date.now();
+  const last = manualTranslateUsers.get(username) || 0;
+
+  if (now - last < MANUAL_TRANSLATE_COOLDOWN) {
+    say(`@${username}, подожди немного перед следующим переводом.`);
+    return;
+  }
+
+  if (message.length > MAX_TRANSLATE_LENGTH) {
+    say(`@${username}, текст слишком длинный. Максимум ${MAX_TRANSLATE_LENGTH} символов.`);
+    return;
+  }
+
+  manualTranslateUsers.set(username, now);
+
   const translated = await translateText(
     message,
     'autodetect',
@@ -655,16 +873,16 @@ async function manualTranslateCommand(username, message) {
   );
 
   if (!translated) {
-    say(`@${username}, не удалось выполнить перевод. Проверь текст или попробуй позже.`);
+    say(`@${username}, перевод временно недоступен. Попробуй позже.`);
     return;
   }
 
-  say(
-    `🌐 Перевод для @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`
-  );
+  say(`🌐 Перевод для @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`);
 }
 
-// ==================== ПЕРЕВОД С РУССКОГО ====================
+// ==================================================
+// ПЕРЕВОД С РУССКОГО
+// ==================================================
 
 async function translateFromRussianCommand(username, language, message) {
   const lang = getLanguageCode(language);
@@ -674,19 +892,24 @@ async function translateFromRussianCommand(username, language, message) {
     return;
   }
 
-  const translated = await translateText(message, 'ru', lang);
-
-  if (!translated) {
-    say(`@${username}, перевод не выполнен.`);
+  if (message.length > MAX_TRANSLATE_LENGTH) {
+    say(`@${username}, текст слишком длинный. Максимум ${MAX_TRANSLATE_LENGTH} символов.`);
     return;
   }
 
-  say(
-    `🌍 Перевод для @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`
-  );
+  const translated = await translateText(message, 'ru', lang);
+
+  if (!translated) {
+    say(`@${username}, перевод временно недоступен.`);
+    return;
+  }
+
+  say(`🌍 Перевод для @${username}: ${translated.slice(0, MAX_CHAT_OUTPUT)}`);
 }
 
-// ==================== ВАЛЮТЫ ЦБ РФ ====================
+// ==================================================
+// ВАЛЮТЫ ЦБ РФ
+// ==================================================
 
 const currencyNames = {
   'доллар': 'USD',
@@ -720,12 +943,21 @@ const currencyNames = {
 };
 
 function getCurrencyCode(currency) {
-  const value = String(currency || '').toLowerCase().trim();
-
+  const value = cleanText(currency).toLowerCase();
   return currencyNames[value] || value.toUpperCase();
 }
 
+let currencyCache = null;
+let currencyCacheTime = 0;
+
 async function getCurrencyRates() {
+  if (
+    currencyCache &&
+    Date.now() - currencyCacheTime < 10 * 60 * 1000
+  ) {
+    return currencyCache;
+  }
+
   const response = await axios.get(
     'https://www.cbr-xml-daily.ru/daily_json.js',
     {
@@ -733,7 +965,10 @@ async function getCurrencyRates() {
     }
   );
 
-  return response.data.Valute;
+  currencyCache = response.data.Valute;
+  currencyCacheTime = Date.now();
+
+  return currencyCache;
 }
 
 async function currencyCommand(username, currency) {
@@ -750,9 +985,7 @@ async function currencyCommand(username, currency) {
 
     const rate = item.Value / item.Nominal;
 
-    say(
-      `💱 ${item.Name}: ${rate.toFixed(2)} RUB за 1 ${code}. По данным ЦБ РФ.`
-    );
+    say(`💱 ${item.Name}: ${rate.toFixed(2)} RUB за 1 ${code}. По данным ЦБ РФ.`);
 
   } catch (error) {
     console.error('Ошибка курса валют:', error.message);
@@ -785,9 +1018,7 @@ async function convertCommand(username, amount, currency) {
     const rate = item.Value / item.Nominal;
     const result = value * rate;
 
-    say(
-      `💰 ${value} ${code} ≈ ${result.toFixed(2)} RUB. По данным ЦБ РФ.`
-    );
+    say(`💰 ${formatNumber(value)} ${code} ≈ ${result.toFixed(2)} RUB. По данным ЦБ РФ.`);
 
   } catch (error) {
     console.error('Ошибка конвертации:', error.message);
@@ -795,10 +1026,12 @@ async function convertCommand(username, amount, currency) {
   }
 }
 
-// ==================== ПОГОДА ====================
+// ==================================================
+// ПОГОДА
+// ==================================================
 
 async function weatherCommand(username, city) {
-  city = String(city || '').trim();
+  city = cleanText(city);
 
   if (!city) {
     say(`@${username}, напиши город. Пример: !погода Москва`);
@@ -828,9 +1061,7 @@ async function weatherCommand(username, city) {
       current.weatherDesc?.[0]?.value ||
       'Нет описания';
 
-    say(
-      `🌤️ ${city}: ${description}, температура ${current.temp_C}°C, ощущается как ${current.FeelsLikeC}°C, влажность ${current.humidity}%, ветер ${current.windspeedKmph} км/ч.`
-    );
+    say(`🌤️ ${city}: ${description}, температура ${current.temp_C}°C, ощущается как ${current.FeelsLikeC}°C, влажность ${current.humidity}%, ветер ${current.windspeedKmph} км/ч.`);
 
   } catch (error) {
     console.error('Ошибка погоды:', error.message);
@@ -838,7 +1069,9 @@ async function weatherCommand(username, city) {
   }
 }
 
-// ==================== ЧАСОВЫЕ ПОЯСА ====================
+// ==================================================
+// ЧАСОВЫЕ ПОЯСА
+// ==================================================
 
 const cityTimeZones = {
   'москва': 'Europe/Moscow',
@@ -936,10 +1169,12 @@ const cityTimeZones = {
   'ташкент': 'Asia/Tashkent'
 };
 
-// ==================== ВРЕМЯ ====================
+// ==================================================
+// ВРЕМЯ
+// ==================================================
 
 function timeCommand(username, city) {
-  city = String(city || '').trim();
+  city = cleanText(city);
 
   if (!city) {
     say(`@${username}, укажи город. Пример: !время Москва`);
@@ -980,15 +1215,17 @@ function timeCommand(username, city) {
   }
 }
 
-// ==================== ПОМОЩЬ ====================
+// ==================================================
+// ПОМОЩЬ
+// ==================================================
 
 function helpCommand() {
-  say(
-    '📚 Команды: !профиль, !баланс, !рыбалка, !ежедневно, !магазин, !купить улучшенная, !купить золотая, !топ, !топрыбаки, !погода город, !время город, !курс USD, !конверт 100 USD, !перевод текст, !на английский текст.'
-  );
+  say('📚 Команды: !профиль, !баланс, !рыбалка, !ежедневно, !магазин, !купить улучшенная, !купить золотая, !топ, !топрыбаки, !погода город, !время город, !курс USD, !конверт 100 USD, !перевод текст, !на английский текст.');
 }
 
-// ==================== ЗАЩИТА ОТ СПАМА ====================
+// ==================================================
+// ЗАЩИТА ОТ СПАМА
+// ==================================================
 
 const commandCooldowns = new Map();
 
@@ -1014,7 +1251,9 @@ function isOnCooldown(username, command, cooldown = COMMAND_COOLDOWN) {
   return false;
 }
 
-// ==================== ОБРАБОТКА СООБЩЕНИЙ ====================
+// ==================================================
+// ОБРАБОТКА СООБЩЕНИЙ
+// ==================================================
 
 client.on('message', async (channel, tags, message, self) => {
   if (self || isShuttingDown) return;
@@ -1023,7 +1262,7 @@ client.on('message', async (channel, tags, message, self) => {
 
   if (!username || IGNORED_USERS.has(username)) return;
 
-  const text = String(message || '').trim();
+  const text = cleanText(message);
 
   if (!text || text.length > 500) return;
 
@@ -1033,7 +1272,10 @@ client.on('message', async (channel, tags, message, self) => {
 
   // Обычные сообщения: автоматический перевод
   if (!text.startsWith('!')) {
-    await autoTranslateToRussian(username, text);
+    autoTranslateToRussian(username, text).catch(error => {
+      console.error('Ошибка автоперевода:', error.message);
+    });
+
     return;
   }
 
@@ -1045,7 +1287,6 @@ client.on('message', async (channel, tags, message, self) => {
 
   try {
     switch (command) {
-
       case '!помощь':
       case '!help':
         helpCommand();
@@ -1160,7 +1401,9 @@ client.on('message', async (channel, tags, message, self) => {
   }
 });
 
-// ==================== ПОДКЛЮЧЕНИЕ ====================
+// ==================================================
+// ЗАПУСК
+// ==================================================
 
 loadProfiles();
 
@@ -1185,20 +1428,25 @@ client.connect().catch(error => {
   console.error('Не удалось подключиться к Twitch:', error);
 });
 
-// ==================== ЗАВЕРШЕНИЕ РАБОТЫ ====================
-
-let isShuttingDown = false;
+// ==================================================
+// ЗАВЕРШЕНИЕ РАБОТЫ
+// ==================================================
 
 function shutdown(signal) {
   if (isShuttingDown) return;
 
   isShuttingDown = true;
 
-  console.log(
-    `Получен ${signal}. Сохраняю данные и отключаю бота...`
-  );
+  console.log(`Получен ${signal}. Сохраняю данные и отключаю бота...`);
 
   saveProfiles();
+
+  // Завершаем ожидающие переводы
+  while (translationQueue.length > 0) {
+    const job = translationQueue.shift();
+    job.resolve(null);
+    translationInflight.delete(job.key);
+  }
 
   const forceExit = setTimeout(() => {
     process.exit(1);
